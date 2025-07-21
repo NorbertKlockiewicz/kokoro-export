@@ -167,6 +167,7 @@ class SineGen(nn.Module):
             u_loc = (uv < 1) * (uv_1 > 0)
             # get the instantanouse phase
             tmp_cumsum = torch.cumsum(rad_values, dim=1)
+            # TODO(jz): can manually unroll to one iteration (bsz)
             # different batch needs to be processed differently
             for idx in range(f0_values.shape[0]):
                 temp_sum = tmp_cumsum[idx, u_loc[idx, :, 0], :]

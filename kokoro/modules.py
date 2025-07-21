@@ -57,10 +57,10 @@ class TextEncoder(nn.Module):
             x.masked_fill_(m, 0.0)
         x = x.transpose(1, 2)  # [B, T, chn]
         lengths = input_lengths if input_lengths.device == torch.device('cpu') else input_lengths.to('cpu')
-        x = nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
-        self.lstm.flatten_parameters()
+        # x = nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+        # self.lstm.flatten_parameters()
         x, _ = self.lstm(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        # x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         x = x.transpose(-1, -2)
         x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
         x_pad[:, :, :x.shape[-1]] = x
@@ -110,10 +110,10 @@ class ProsodyPredictor(nn.Module):
         d = self.text_encoder(texts, style, text_lengths, m)
         m = m.unsqueeze(1)
         lengths = text_lengths if text_lengths.device == torch.device('cpu') else text_lengths.to('cpu')
-        x = nn.utils.rnn.pack_padded_sequence(d, lengths, batch_first=True, enforce_sorted=False)
-        self.lstm.flatten_parameters()
+        # x = nn.utils.rnn.pack_padded_sequence(d, lengths, batch_first=True, enforce_sorted=False)
+        # self.lstm.flatten_parameters()
         x, _ = self.lstm(x)
-        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        # x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         x_pad = torch.zeros([x.shape[0], m.shape[-1], x.shape[-1]], device=x.device)
         x_pad[:, :x.shape[1], :] = x
         x = x_pad
@@ -122,7 +122,8 @@ class ProsodyPredictor(nn.Module):
         return duration.squeeze(-1), en
 
     def F0Ntrain(self, x, s):
-        x, _ = self.shared(x.transpose(-1, -2))
+        x = x.transpose(-1, -2)
+        x, _ = self.shared(x)
         F0 = x.transpose(-1, -2)
         for block in self.F0:
             F0 = block(F0, s)
@@ -161,12 +162,12 @@ class DurationEncoder(nn.Module):
             else:
                 lengths = text_lengths if text_lengths.device == torch.device('cpu') else text_lengths.to('cpu')
                 x = x.transpose(-1, -2)
-                x = nn.utils.rnn.pack_padded_sequence(
-                    x, lengths, batch_first=True, enforce_sorted=False)
-                block.flatten_parameters()
+                # x = nn.utils.rnn.pack_padded_sequence(
+                #     x, lengths, batch_first=True, enforce_sorted=False)
+                # block.flatten_parameters()
                 x, _ = block(x)
-                x, _ = nn.utils.rnn.pad_packed_sequence(
-                    x, batch_first=True)
+                # x, _ = nn.utils.rnn.pad_packed_sequence(
+                #     x, batch_first=True)
                 x = F.dropout(x, p=self.dropout, training=False)
                 x = x.transpose(-1, -2)
                 x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)

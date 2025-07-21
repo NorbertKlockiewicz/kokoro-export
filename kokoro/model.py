@@ -90,30 +90,42 @@ class KModel(torch.nn.Module):
         ref_s: torch.FloatTensor,
         speed: float = 1
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
-        input_lengths = torch.full(
-            (input_ids.shape[0],), 
-            input_ids.shape[-1], 
-            device=input_ids.device,
-            dtype=torch.long
-        )
+        # # Unnecessary for batch size = 1.
+        # input_lengths = torch.full(
+        #     (input_ids.shape[0],),
+        #     input_ids.shape[-1],
+        #     device=input_ids.device,
+        #     dtype=torch.long
+        # )
+        input_lengths = torch.tensor(input_ids.shape[-1])
 
-        text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
-        text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1)).to(self.device)
-        bert_dur = self.bert(input_ids, attention_mask=(~text_mask).int())
+        # # Original code supporting arbitrary batch sizes.
+        # text_mask = torch.arange(input_lengths.max()).unsqueeze(0).expand(input_lengths.shape[0], -1).type_as(input_lengths)
+        # text_mask = torch.gt(text_mask+1, input_lengths.unsqueeze(1)).to(self.device)
+
+        # Only support batch size of 1 for export.
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
+
+        bert_dur = self.bert(input_ids, attention_mask=text_mask.int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
+        # # Force batch size = 1.
+        # s = ref_s[128:]
         s = ref_s[:, 128:]
-        d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)
+        d = self.predictor.text_encoder(d_en, s, input_lengths, ~text_mask)
         x, _ = self.predictor.lstm(d)
         duration = self.predictor.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
         indices = torch.repeat_interleave(torch.arange(input_ids.shape[1], device=self.device), pred_dur)
+        torch._check(indices.shape[0] > 0)
         pred_aln_trg = torch.zeros((input_ids.shape[1], indices.shape[0]), device=self.device)
         pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
         pred_aln_trg = pred_aln_trg.unsqueeze(0).to(self.device)
+        # # Force batch size = 1.
+        # pred_aln_trg = pred_aln_trg.to(self.device)
         en = d.transpose(-1, -2) @ pred_aln_trg
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
-        t_en = self.text_encoder(input_ids, input_lengths, text_mask)
+        t_en = self.text_encoder(input_ids, input_lengths, ~text_mask)
         asr = t_en @ pred_aln_trg
         audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze()
         return audio, pred_dur
