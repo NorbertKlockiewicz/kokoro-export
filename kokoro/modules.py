@@ -123,6 +123,7 @@ class ProsodyPredictor(nn.Module):
 
     def F0Ntrain(self, x, s):
         x = x.transpose(-1, -2)
+        torch._check_is_size(x.shape[1])
         x, _ = self.shared(x)
         F0 = x.transpose(-1, -2)
         for block in self.F0:

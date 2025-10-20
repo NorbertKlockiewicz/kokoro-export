@@ -18,12 +18,14 @@ classifiers = [
 ]
 requires-python = ">=3.10, <3.13"
 dependencies = [
+    "executorch>=0.7.0",
     "huggingface_hub",
     "loguru",
     "misaki[en]>=0.9.4",
     "numpy",
-    "torch",
-    "transformers"
+    "scipy>=1.15.3",
+    "soundfile>=0.13.1",
+    "transformers",
 ]
 
 [project.scripts]
