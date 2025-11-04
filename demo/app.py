@@ -21,6 +21,7 @@ def generate_first(text, voice='af_heart', speed=1, use_gpu=CUDA_AVAILABLE):
     use_gpu = use_gpu and CUDA_AVAILABLE
     for _, ps, _ in pipeline(text, voice, speed):
         ref_s = pack[len(ps)-1]
+        print(ref_s.shape)
         try:
             if use_gpu:
                 audio = forward_gpu(ps, ref_s, speed)
@@ -70,8 +71,8 @@ def generate_all(text, voice='af_heart', speed=1, use_gpu=CUDA_AVAILABLE):
             first = False
             yield 24000, torch.zeros(1).numpy()
 
-with open('en.txt', 'r') as r:
-    random_quotes = [line.strip() for line in r]
+# with open('en.txt', 'r') as r:
+#     random_quotes = [line.strip() for line in r]
 
 def get_random_quote():
     return random.choice(random_quotes)

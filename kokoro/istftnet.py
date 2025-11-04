@@ -203,7 +203,8 @@ class SineGen(nn.Module):
         #        std = self.sine_amp/3 -> max value ~ self.sine_amp
         #        for voiced regions is self.noise_std
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
-        noise = noise_amp * torch.randn_like(sine_waves)
+        # noise = noise_amp * torch.randn_like(sine_waves)
+        noise = noise_amp * torch.randn(size=sine_waves.shape)  # For some reason, ExecuTorch likes randn() more than randn_like()
         # first: set the unvoiced part to 0 by uv
         # then: additive noise
         sine_waves = sine_waves * uv + noise
@@ -251,7 +252,8 @@ class SourceModuleHnNSF(nn.Module):
             sine_wavs, uv, _ = self.l_sin_gen(x)
         sine_merge = self.l_tanh(self.l_linear(sine_wavs))
         # source for noise branch, in the same shape as uv
-        noise = torch.randn_like(uv) * self.sine_amp / 3
+        # noise = torch.randn_like(uv) * self.sine_amp / 3
+        noise = torch.randn(size=uv.shape) * self.sine_amp / 3  # For some reason, ExecuTorch likes randn() more than randn_like()
         return sine_merge, noise, uv
 
 
@@ -311,7 +313,10 @@ class Generator(nn.Module):
             x = self.ups[i](x)
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
-            x = x + x_source
+            x_source = x_source.clone()         # ESSENTIAL TO FIX THE BUG
+            # ---------------------------------------
+            x = x + x_source           # FATAL MOMENT
+            # ---------------------------------------
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
