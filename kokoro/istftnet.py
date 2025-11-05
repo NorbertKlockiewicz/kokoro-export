@@ -465,6 +465,7 @@ class Generator(nn.Module):
             x = self.ups[i](x)
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
+            x = x.clone()
             x_source = x_source.clone()         # ESSENTIAL TO FIX THE BUG
             # ---------------------------------------
             x = x + x_source           # FATAL MOMENT

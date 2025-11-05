@@ -8,12 +8,12 @@ runtime = Runtime.get()
 
 # Sample input
 text_sample = "Hello world!"
-asr_example = torch.randn(1, 512, 62)
-F0_pred_example = torch.randn(1, 124)
-N_pred_example = torch.randn(1, 124)
+asr_example = torch.randn(1, 512, 78)
+F0_pred_example = torch.randn(1, 156)
+N_pred_example = torch.randn(1, 156)
 ref_s_example = torch.randn(1, 128)
 
-program = runtime.load_program("model.pte")
+program = runtime.load_program("exported_pte/text_decoder_16_ndet.pte")
 method = program.load_method("forward")
 outputs = method.execute([asr_example, F0_pred_example, N_pred_example, ref_s_example])
 

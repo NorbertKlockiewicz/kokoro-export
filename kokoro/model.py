@@ -113,6 +113,10 @@ class KModel(torch.nn.Module):
         #     device=input_ids.device,
         #     dtype=torch.long
         # )
+
+        # ------------------------------------------------------------------------------
+        # DurationPredictor (duration_predictor.pte) - returns pred_dur, d, s
+        # ------------------------------------------------------------------------------
         input_lengths = torch.tensor(input_ids.shape[-1])
 
         # # Original code supporting arbitrary batch sizes.
@@ -132,6 +136,11 @@ class KModel(torch.nn.Module):
         duration = self.predictor.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
+        # ------------------------------------------------------------------------------
+
+        # ------------------------------------------------------------------------------
+        # External code
+        # ------------------------------------------------------------------------------
         indices = torch.repeat_interleave(
             torch.arange(input_ids.shape[1], device=self.device), pred_dur
         )
@@ -145,10 +154,32 @@ class KModel(torch.nn.Module):
         # # Force batch size = 1.
         # pred_aln_trg = pred_aln_trg.to(self.device)
         en = d.transpose(-1, -2) @ pred_aln_trg
+        # ------------------------------------------------------------------------------
+
+        # ------------------------------------------------------------------------------
+        # F0NPredictor (f0n_predictor.pte) - returns F0_pred, N_pred
+        # ------------------------------------------------------------------------------
         F0_pred, N_pred = self.predictor.F0Ntrain(en, s)
+        # ------------------------------------------------------------------------------
+
+        # ------------------------------------------------------------------------------
+        # TextEncoderWrapper (text_encoder.pte) - returns t_en, takes only input_ids
+        # ------------------------------------------------------------------------------
         t_en = self.text_encoder(input_ids, input_lengths, ~text_mask)
+        # ------------------------------------------------------------------------------
+
+        # ------------------------------------------------------------------------------
+        # External code
+        # ------------------------------------------------------------------------------
         asr = t_en @ pred_aln_trg
+        # ------------------------------------------------------------------------------
+
+        # ------------------------------------------------------------------------------
+        # TextDecoderWrapper (text_decoder_16_xxx.pte) - returns audio
+        # ------------------------------------------------------------------------------
         audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128]).squeeze()
+        # ------------------------------------------------------------------------------
+        
         return audio, pred_dur
 
     def forward(
