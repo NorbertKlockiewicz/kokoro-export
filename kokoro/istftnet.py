@@ -18,11 +18,29 @@ def get_padding(kernel_size, dilation=1):
     return int((kernel_size * dilation - dilation) / 2)
 
 
+class CustomInstanceNorm1d(nn.Module):
+    def __init__(self, num_features, eps=1e-5, affine=True):
+        super().__init__()
+        self.eps = eps
+        self.affine = affine
+        if affine:
+            self.weight = nn.Parameter(torch.ones(num_features))
+            self.bias = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x):
+        mean = x.mean(dim=[2], keepdim=True)
+        var = x.var(dim=[2], unbiased=False, keepdim=True)
+        x_norm = (x - mean) / torch.sqrt(var + self.eps)
+        if self.affine:
+            x_norm = self.weight.view(1, -1, 1) * x_norm + self.bias.view(1, -1, 1)
+        return x_norm
+
+
 class AdaIN1d(nn.Module):
     def __init__(self, style_dim, num_features):
         super().__init__()
         # affine should be False, however there's a bug in the old torch.onnx.export (not newer dynamo) that causes the channel dimension to be lost if affine=False. When affine is true, there's additional learnably parameters. This shouldn't really matter setting it to True, since we're in inference mode
-        self.norm = nn.InstanceNorm1d(num_features, affine=True)
+        self.norm = CustomInstanceNorm1d(num_features, affine=True)    # <---------- BUG NR 1
         self.fc = nn.Linear(style_dim, num_features * 2)
 
     def forward(self, x, s):
@@ -282,7 +300,6 @@ class SineGen(nn.Module):
         output sine_tensor: tensor(batchsize=1, length, dim)
         output uv: tensor(batchsize=1, length, 1)
         """
-        f0_buf = torch.zeros(f0.shape[0], f0.shape[1], self.dim, device=f0.device)
         # fundamental component
         fn = torch.multiply(
             f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device)
@@ -298,7 +315,10 @@ class SineGen(nn.Module):
         #        for voiced regions is self.noise_std
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         # noise = noise_amp * torch.randn_like(sine_waves)
-        noise = noise_amp * torch.randn(size=sine_waves.shape)  # For some reason, ExecuTorch likes randn() more than randn_like()
+        # Use deterministic pseudo-random noise for ExecuTorch (no randn support)
+        noise = noise_amp * (
+            torch.sin(sine_waves * 137.0) * torch.cos(sine_waves * 211.0)
+        )
         # first: set the unvoiced part to 0 by uv
         # then: additive noise
         sine_waves = sine_waves * uv + noise
@@ -361,7 +381,8 @@ class SourceModuleHnNSF(nn.Module):
         sine_merge = self.l_tanh(self.l_linear(sine_wavs))
         # source for noise branch, in the same shape as uv
         # noise = torch.randn_like(uv) * self.sine_amp / 3
-        noise = torch.randn(size=uv.shape) * self.sine_amp / 3  # For some reason, ExecuTorch likes randn() more than randn_like()
+        # Use deterministic pseudo-random noise for ExecuTorch (no randn support)
+        noise = (torch.sin(uv * 173.0) * torch.cos(uv * 239.0)) * self.sine_amp / 3
         return sine_merge, noise, uv
 
 
@@ -461,15 +482,13 @@ class Generator(nn.Module):
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, negative_slope=0.1)
             x_source = self.noise_convs[i](har)
+            # <---------------------- Diference source
             x_source = self.noise_res[i](x_source, s)
             x = self.ups[i](x)
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
-            x = x.clone()
-            x_source = x_source.clone()         # ESSENTIAL TO FIX THE BUG
-            # ---------------------------------------
-            x = x + x_source           # FATAL MOMENT
-            # ---------------------------------------
+            x = x + x_source
+            # <---------------------- Subtle differences for x (but probably expected, as x_source is somewhat a random noise)
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
@@ -543,7 +562,7 @@ class AdainResBlk1d(nn.Module):
         return x
 
     def _residual(self, x, s):
-        x = self.norm1(x, s)
+        x = self.norm1(x, s) # <- NaN
         x = self.actv(x)
         x = self.pool(x)
         x = self.conv1(self.dropout(x))
@@ -612,5 +631,6 @@ class Decoder(nn.Module):
             x = block(x, s)
             if block.upsample_type != "none":
                 res = False
+        #------------------------------------
         x = self.generator(x, s, F0_curve)
         return x

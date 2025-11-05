@@ -1,5 +1,6 @@
 import spaces
 from kokoro import KModel, KPipeline
+from kokoro.model_pte import KModelPTE
 import gradio as gr
 import os
 import random

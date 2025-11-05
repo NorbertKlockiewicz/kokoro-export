@@ -213,7 +213,7 @@ with torch.no_grad():
         # ).to_executorch()
         print("✓ Lowered with XNNPACK")
 
-        pte_path_xnn = "exported_pte/text_decoder_16_ndet.pte"
+        pte_path_xnn = "exported_pte/text_decoder_16_det.pte"
         # with open(pte_path_xnn, "wb") as f:
         #     f.write(edge_program_xnn.buffer)
 
