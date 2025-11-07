@@ -18,6 +18,7 @@ def get_padding(kernel_size, dilation=1):
     return int((kernel_size * dilation - dilation) / 2)
 
 
+# A custom replacement for nn.InstanceNorm1d
 class CustomInstanceNorm1d(nn.Module):
     def __init__(self, num_features, eps=1e-5, affine=True):
         super().__init__()
@@ -40,7 +41,7 @@ class AdaIN1d(nn.Module):
     def __init__(self, style_dim, num_features):
         super().__init__()
         # affine should be False, however there's a bug in the old torch.onnx.export (not newer dynamo) that causes the channel dimension to be lost if affine=False. When affine is true, there's additional learnably parameters. This shouldn't really matter setting it to True, since we're in inference mode
-        self.norm = CustomInstanceNorm1d(num_features, affine=True)    # <---------- BUG NR 1
+        self.norm = CustomInstanceNorm1d(num_features, affine=True)     # NOTE: In original version with nn.InstanceNorm1d, it produces NaNs in exported model
         self.fc = nn.Linear(style_dim, num_features * 2)
 
     def forward(self, x, s):
@@ -481,14 +482,12 @@ class Generator(nn.Module):
             har = torch.cat([har_spec, har_phase], dim=1)
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, negative_slope=0.1)
-            x_source = self.noise_convs[i](har)
-            # <---------------------- Diference source
+            x_source = self.noise_convs[i](har)     # NOTE: Differs slightly in exported model compared to the original one
             x_source = self.noise_res[i](x_source, s)
             x = self.ups[i](x)
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
             x = x + x_source
-            # <---------------------- Subtle differences for x (but probably expected, as x_source is somewhat a random noise)
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
@@ -562,7 +561,7 @@ class AdainResBlk1d(nn.Module):
         return x
 
     def _residual(self, x, s):
-        x = self.norm1(x, s) # <- NaN
+        x = self.norm1(x, s)
         x = self.actv(x)
         x = self.pool(x)
         x = self.conv1(self.dropout(x))
@@ -631,6 +630,5 @@ class Decoder(nn.Module):
             x = block(x, s)
             if block.upsample_type != "none":
                 res = False
-        #------------------------------------
         x = self.generator(x, s, F0_curve)
         return x

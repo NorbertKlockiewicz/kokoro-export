@@ -106,14 +106,6 @@ class KModel(torch.nn.Module):
     def forward_with_tokens(
         self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: float = 1
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
-        # # Unnecessary for batch size = 1.
-        # input_lengths = torch.full(
-        #     (input_ids.shape[0],),
-        #     input_ids.shape[-1],
-        #     device=input_ids.device,
-        #     dtype=torch.long
-        # )
-
         # ------------------------------------------------------------------------------
         # DurationPredictor (duration_predictor.pte) - returns pred_dur, d, s
         # ------------------------------------------------------------------------------
@@ -138,9 +130,6 @@ class KModel(torch.nn.Module):
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
         # ------------------------------------------------------------------------------
 
-        # ------------------------------------------------------------------------------
-        # External code
-        # ------------------------------------------------------------------------------
         indices = torch.repeat_interleave(
             torch.arange(input_ids.shape[1], device=self.device), pred_dur
         )
@@ -154,7 +143,6 @@ class KModel(torch.nn.Module):
         # # Force batch size = 1.
         # pred_aln_trg = pred_aln_trg.to(self.device)
         en = d.transpose(-1, -2) @ pred_aln_trg
-        # ------------------------------------------------------------------------------
 
         # ------------------------------------------------------------------------------
         # F0NPredictor (f0n_predictor.pte) - returns F0_pred, N_pred
@@ -168,11 +156,7 @@ class KModel(torch.nn.Module):
         t_en = self.text_encoder(input_ids, input_lengths, ~text_mask)
         # ------------------------------------------------------------------------------
 
-        # ------------------------------------------------------------------------------
-        # External code
-        # ------------------------------------------------------------------------------
         asr = t_en @ pred_aln_trg
-        # ------------------------------------------------------------------------------
 
         # ------------------------------------------------------------------------------
         # TextDecoderWrapper (text_decoder_16_xxx.pte) - returns audio
@@ -197,12 +181,20 @@ class KModel(torch.nn.Module):
             len(input_ids) + 2,
             self.context_length,
         )
+
+        # Cut the number of tokens (as models are being exported with static input)
+        TARGET_TOKENS = 16
+        while len(input_ids) < (TARGET_TOKENS - 2):
+            input_ids.append(0)
+        input_ids = input_ids[:(TARGET_TOKENS - 2)]
         input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
+
         ref_s = ref_s.to(self.device)
         audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
         audio = audio.squeeze().cpu()
         pred_dur = pred_dur.cpu() if pred_dur is not None else None
         logger.debug(f"pred_dur: {pred_dur}")
+        
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
 

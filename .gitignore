@@ -170,8 +170,16 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-model
+# Model files
 output
-.executorch_venv/
+original_models/*.pt
+original_models/*.pth
+original_models/*.pte
+!original_models/.gitkeep
+exported_models/*.pte
+exported_models/tmp/*.pte
+!exported_models/.gitkeep
 
-exported_pte/
+# Non-model artifacts
+profile/artifacts/**
+!profile/artifacts/.gitkeep
