@@ -181,5 +181,5 @@ exported_models/tmp/*.pte
 !exported_models/.gitkeep
 
 # Non-model artifacts
-profile/artifacts/**
-!profile/artifacts/.gitkeep
+profiling/artifacts/**
+!profiling/artifacts/.gitkeep

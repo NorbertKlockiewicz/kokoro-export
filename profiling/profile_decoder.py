@@ -1,17 +1,31 @@
 from kokoro import KModel
-from kokoro.istftnet import Decoder
 from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
-from executorch.devtools.backend_debug import print_delegation_info, get_delegation_info
 from executorch.exir import to_edge_transform_and_lower
-from huggingface_hub import hf_hub_download
+from executorch.devtools import generate_etrecord
+from executorch.exir import (
+    EdgeProgramManager,
+    ExecutorchProgramManager,
+)
 from torch.nn import Module
-from typing import Literal
+from executorch.devtools.bundled_program.config import MethodTestCase, MethodTestSuite
+from executorch.devtools import BundledProgram
+from executorch.devtools.bundled_program.serialize import (
+    serialize_from_bundled_program_to_flatbuffer,
+)
+from executorch.devtools import Inspector
+import copy
+import pandas as pd
+import subprocess
 import torch
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # ----------------------------
 # Decoder - exported interface
 # ----------------------------
 
+print("Defining DecoderWrapper...")
 class DecoderWrapper(Module):
     def __init__(self, model: KModel):
         super().__init__()
@@ -22,23 +36,23 @@ class DecoderWrapper(Module):
         return self.decoder(asr, F0_pred, N_pred, ref_s)
     
 
+print("DecoderWrapper defined.")
+
 # ------------------------
 # Decoder - model instance
 # ------------------------
 
-# Create model
+print("Creating KModel and DecoderWrapper instance...")
 model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
-
 decoder = DecoderWrapper(model)
 decoder.eval()
-
+print("Model and DecoderWrapper instance created and set to eval mode.")
 
 # ---------------------------
 # Decoder - model adjustments
 # ---------------------------
 
-# Get rid of all weight_norm decllarations to enable delegating the convolutions to XNNPACK backend
-# NOTE: Speeds up the entire inference from ~62 seconds to 0.68 seconds
+print("Removing weight_norm parametrizations from decoder...")
 def remove_weight_norms(decoder):
     # decoder -> generator -> resblocks -> convs1, convs2
     for module in decoder.generator.resblocks:
@@ -81,39 +95,18 @@ def remove_weight_norms(decoder):
 
 # Apply deparametrization
 remove_weight_norms(decoder.decoder)
-
+print("Weight_norm parametrizations removed.")
 
 # ----------------------------
 # Decoder - input data loading
 # ----------------------------
 
-# ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
-# ------------------------------------------------------------------------------------------
-
-if INPUT_MODE == "test":
-    data = torch.load("original_models/data/text_decoder_input.pt")
-    asr = data["asr"]
-    F0_pred = data["F0_pred"]
-    N_pred = data["N_pred"]
-    ref_s = data["ref_s"]
-elif INPUT_MODE == "random-small":
-    asr = torch.randn(size=(1, 512, 64))
-    F0_pred = torch.randn(size=(1, 128))
-    N_pred = torch.randn(size=(1, 128))
-    ref_s = torch.randn(size=(1, 128))
-elif INPUT_MODE == "random-medium":
-    asr = torch.randn(size=(1, 512, 256))
-    F0_pred = torch.randn(size=(1, 512))
-    N_pred = torch.randn(size=(1, 512))
-    ref_s = torch.randn(size=(1, 128))
-elif INPUT_MODE == "random-big":
-    asr = torch.randn(size=(1, 512, 1024))
-    F0_pred = torch.randn(size=(1, 4096))
-    N_pred = torch.randn(size=(1, 4096))
-    ref_s = torch.randn(size=(1, 128))
-else:
-    raise RuntimeError("Invalid input mode!")
+print("Loading input data for decoder...")
+data = torch.load("original_models/data/text_decoder_input.pt")
+asr = data["asr"]
+F0_pred = data["F0_pred"]
+N_pred = data["N_pred"]
+ref_s = data["ref_s"]
 
 inputs = (
     asr,
@@ -121,26 +114,79 @@ inputs = (
     N_pred,
     ref_s
 )
+print("Input data loaded.")
+
+# ------------
+# Common paths
+# ------------
+
+PROFILE_ARTIFACTS_ROOT = "profiling/artifacts"
+PROFILE_RESULTS_ROOT = "profiling/results"
 
 
-# -------------------------
-# Decoder - export pipeline
-# -------------------------
+# -----------------
+# Generate ETRecord
+# -----------------
 
-# Export
+print("Exporting program and generating ETRecord...")
 exported_program = torch.export.export(decoder, inputs)
-
-executorch_program = to_edge_transform_and_lower(
+executorch_program: EdgeProgramManager = to_edge_transform_and_lower(
     exported_program,
     partitioner = [XnnpackPartitioner()]
-).to_executorch()
+)
 
-print_delegation_info(executorch_program.exported_program().graph_module)
+edge_program_manager_copy = copy.deepcopy(executorch_program)
+et_program_manager: ExecutorchProgramManager = executorch_program.to_executorch()
 
-# Save exported file
-ROOT_DESTINATION = "exported_models/tmp"
+etrecord_path = f"{PROFILE_ARTIFACTS_ROOT}/etrecord.bin"
+generate_etrecord(etrecord_path, edge_program_manager_copy, et_program_manager)
+print(f"ETRecord generated and saved to {etrecord_path}.")
 
-with open(f"{ROOT_DESTINATION}/text_decoder_{INPUT_MODE}.pte", "wb") as file:
-    file.write(executorch_program.buffer)
+# ---------------
+# Generate ETDump
+# ---------------
 
-print("Finished!")
+print("Generating ETDump and BundledProgram...")
+m_name = "forward"
+method_graphs = {m_name: torch.export.export(decoder, inputs, strict=True)}
+
+method_test_suites = [
+    MethodTestSuite(
+        method_name=m_name,
+        test_cases=[
+            MethodTestCase(inputs=inputs, expected_outputs=getattr(decoder, m_name)(*inputs))
+        ],
+    )
+]
+
+# Step 3: Generate BundledProgram
+executorch_program = to_edge_transform_and_lower(method_graphs, partitioner=[XnnpackPartitioner()]).to_executorch()
+bundled_program = BundledProgram(executorch_program, method_test_suites)
+
+# Step 4: Serialize BundledProgram to flatbuffer.
+serialized_bundled_program = serialize_from_bundled_program_to_flatbuffer(
+    bundled_program
+)
+bp_path = f"{PROFILE_ARTIFACTS_ROOT}/bundled_program.bp"
+with open(bp_path, "wb") as f:
+    f.write(serialized_bundled_program)
+print(f"BundledProgram serialized and saved to {bp_path}.")
+
+print("Running executorch example runner...")
+subprocess.run(
+    ["../executorch/cmake-out/examples/devtools/example_runner", f"--bundled_program_path={bp_path}"],
+    check=True
+)
+print("executorch example runner finished.")
+
+# -------
+# Profile
+# -------
+
+print("Profiling with Inspector and saving results...")
+etdump_path = f"{PROFILE_ARTIFACTS_ROOT}/etdump.etdp"
+
+inspector = Inspector(etdump_path=etdump_path, etrecord=etrecord_path)
+tabular_data = inspector.to_dataframe()
+tabular_data.to_csv(f"{PROFILE_RESULTS_ROOT}/profiling_results.csv", index=False)
+print(f"Profiling results saved to {PROFILE_RESULTS_ROOT}/profiling_results.csv")
