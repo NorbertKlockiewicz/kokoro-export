@@ -21,7 +21,7 @@ decoder.eval()
 # -----------------------------
 
 # -------------------------------------------------------------
-pte_path_xnn = "exported_models/tmp/text_decoder_test.pte"
+pte_path_xnn = "exported_models/text_decoder_16.pte"
 # -------------------------------------------------------------
 
 program_xnn = runtime.load_program(pte_path_xnn)
@@ -40,8 +40,6 @@ input_shapes = [
     for sizes in re.findall(r'sizes=\[([^\]]+)\]', meta_str)
 ]
 input_shapes = input_shapes[:4]     # We expect 4 shapes (4 inputs)
-
-print(input_shapes)
 
 # Define all possible input sets
 input_sets = {

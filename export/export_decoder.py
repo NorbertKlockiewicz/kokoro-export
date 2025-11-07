@@ -20,17 +20,6 @@ class DecoderWrapper(Module):
     def forward(self, asr: torch.FloatTensor, F0_pred: torch.FloatTensor,
                 N_pred: torch.FloatTensor, ref_s: torch.FloatTensor):
         return self.decoder(asr, F0_pred, N_pred, ref_s)
-    
-
-# ------------------------
-# Decoder - model instance
-# ------------------------
-
-# Create model
-model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
-
-decoder = DecoderWrapper(model)
-decoder.eval()
 
 
 # ---------------------------
@@ -79,9 +68,6 @@ def remove_weight_norms(decoder):
         _ = conv.weight  # forces parameter update
         torch.nn.utils.parametrize.remove_parametrizations(conv, "weight", leave_parametrized=True)
 
-# Apply deparametrization
-remove_weight_norms(decoder.decoder)
-
 
 # ----------------------------
 # Decoder - input data loading
@@ -91,56 +77,71 @@ remove_weight_norms(decoder.decoder)
 INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
 # ------------------------------------------------------------------------------------------
 
-if INPUT_MODE == "test":
-    data = torch.load("original_models/data/text_decoder_input.pt")
-    asr = data["asr"]
-    F0_pred = data["F0_pred"]
-    N_pred = data["N_pred"]
-    ref_s = data["ref_s"]
-elif INPUT_MODE == "random-small":
-    asr = torch.randn(size=(1, 512, 64))
-    F0_pred = torch.randn(size=(1, 128))
-    N_pred = torch.randn(size=(1, 128))
-    ref_s = torch.randn(size=(1, 128))
-elif INPUT_MODE == "random-medium":
-    asr = torch.randn(size=(1, 512, 256))
-    F0_pred = torch.randn(size=(1, 512))
-    N_pred = torch.randn(size=(1, 512))
-    ref_s = torch.randn(size=(1, 128))
-elif INPUT_MODE == "random-big":
-    asr = torch.randn(size=(1, 512, 1024))
-    F0_pred = torch.randn(size=(1, 4096))
-    N_pred = torch.randn(size=(1, 4096))
-    ref_s = torch.randn(size=(1, 128))
-else:
-    raise RuntimeError("Invalid input mode!")
+if __name__ == "__main__":
+    if INPUT_MODE == "test":
+        data = torch.load("original_models/data/text_decoder_input.pt")
+        asr = data["asr"]
+        F0_pred = data["F0_pred"]
+        N_pred = data["N_pred"]
+        ref_s = data["ref_s"]
+    elif INPUT_MODE == "random-small":
+        asr = torch.randn(size=(1, 512, 64))
+        F0_pred = torch.randn(size=(1, 128))
+        N_pred = torch.randn(size=(1, 128))
+        ref_s = torch.randn(size=(1, 128))
+    elif INPUT_MODE == "random-medium":
+        asr = torch.randn(size=(1, 512, 256))
+        F0_pred = torch.randn(size=(1, 512))
+        N_pred = torch.randn(size=(1, 512))
+        ref_s = torch.randn(size=(1, 128))
+    elif INPUT_MODE == "random-big":
+        asr = torch.randn(size=(1, 512, 1024))
+        F0_pred = torch.randn(size=(1, 4096))
+        N_pred = torch.randn(size=(1, 4096))
+        ref_s = torch.randn(size=(1, 128))
+    else:
+        raise RuntimeError("Invalid input mode!")
 
-inputs = (
-    asr,
-    F0_pred,
-    N_pred,
-    ref_s
-)
+    inputs = (
+        asr,
+        F0_pred,
+        N_pred,
+        ref_s
+    )
 
 
 # -------------------------
 # Decoder - export pipeline
 # -------------------------
 
-# Export
-exported_program = torch.export.export(decoder, inputs)
+def convert_to_executorch_program(inputs):
+    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
+    decoder = DecoderWrapper(model)
+    decoder.eval()
 
-executorch_program = to_edge_transform_and_lower(
-    exported_program,
-    partitioner = [XnnpackPartitioner()]
-).to_executorch()
+    # Apply deparametrization
+    remove_weight_norms(decoder.decoder)
 
-print_delegation_info(executorch_program.exported_program().graph_module)
+    # Export
+    exported_program = torch.export.export(decoder, inputs)
 
-# Save exported file
-ROOT_DESTINATION = "exported_models/tmp"
+    executorch_program = to_edge_transform_and_lower(
+        exported_program,
+        partitioner = [XnnpackPartitioner()]
+    )
 
-with open(f"{ROOT_DESTINATION}/text_decoder_{INPUT_MODE}.pte", "wb") as file:
-    file.write(executorch_program.buffer)
+    return decoder, executorch_program
 
-print("Finished!")
+if __name__ == "__main__":
+    _, executorch_program = convert_to_executorch_program(inputs)
+    executorch_program = executorch_program.to_executorch()
+
+    print_delegation_info(executorch_program.exported_program().graph_module)
+
+    # Save exported file
+    ROOT_DESTINATION = "exported_models/tmp"
+
+    with open(f"{ROOT_DESTINATION}/text_decoder_{INPUT_MODE}.pte", "wb") as file:
+        file.write(executorch_program.buffer)
+
+    print("Finished!")
