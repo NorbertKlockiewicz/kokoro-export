@@ -12,13 +12,11 @@ model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True).eval()
 # -------------------------------------------
 # INPUTS - phonemes, voice & target no tokens
 # -------------------------------------------
-
 phonemes = "həlˈoʊ wˈɝld"
 
 voice = "af_bella"
 
 TARGET_TOKENS = 16
-
 # -------------------------------------------
 
 
@@ -112,3 +110,5 @@ torch.save({
     "N_pred": text_decoder_N_pred,
     "ref_s": text_decoder_ref_s
 }, f"{ROOT_DESTINATION}/text_decoder_input.pt")
+
+print("Finished!")

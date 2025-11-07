@@ -1,33 +1,44 @@
+from kokoro import KModel
 from kokoro.istftnet import Decoder
 from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
-from executorch.exir import to_edge_transform_and_lower
-import executorch
-import json
-import torch
-from kokoro import KModel
-from huggingface_hub import hf_hub_download
 from executorch.devtools.backend_debug import print_delegation_info, get_delegation_info
+from executorch.exir import to_edge_transform_and_lower
+from huggingface_hub import hf_hub_download
+from typing import Literal
+import torch
+from torch.nn import Module
+
+# ----------------------------
+# Decoder - exported interface
+# ----------------------------
+
+class DecoderWrapper(Module):
+    def __init__(self, model: KModel):
+        super().__init__()
+        self.decoder = model.decoder
+
+    def forward(self, asr: torch.FloatTensor, F0_pred: torch.FloatTensor,
+                N_pred: torch.FloatTensor, ref_s: torch.FloatTensor):
+        return self.decoder(asr, F0_pred, N_pred, ref_s)
+    
+
+# ------------------------
+# Decoder - model instance
+# ------------------------
+
+# Create model
+model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
+
+decoder = DecoderWrapper(model)
+decoder.eval()
 
 
-model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True).eval()
+# ---------------------------
+# Decoder - model adjustments
+# ---------------------------
 
-
-data = torch.load("output/real_inputs.pt")
-asr = data["asr"]
-F0_pred = data["F0_pred"]
-N_pred = data["N_pred"]
-ref_s = data["ref_s"]
-
-
-# Load config file
-CONFIG_FILEPATH = "config.json"
-with open(CONFIG_FILEPATH, 'r', encoding='utf-8') as r:
-	config = json.load(r)
-
-# Create a decoder
-decoder = model.decoder
-decoder.eval()      # Very important to set model to eval mode
-
+# Get rid of all weight_norm decllarations to enable delegating the convolutions to XNNPACK backend
+# NOTE: Speeds up the entire inference from ~62 seconds to 0.68 seconds
 def remove_weight_norms(decoder):
     # decoder -> generator -> resblocks -> convs1, convs2
     for module in decoder.generator.resblocks:
@@ -68,19 +79,41 @@ def remove_weight_norms(decoder):
         _ = conv.weight  # forces parameter update
         torch.nn.utils.parametrize.remove_parametrizations(conv, "weight", leave_parametrized=True)
 
-
 # Apply deparametrization
-remove_weight_norms(decoder)
+remove_weight_norms(decoder.decoder)
 
-# Sample input
-# text_sample = "Hello world!"
-# voice_style = "af_heart"
-# speed = 1.0
-# # Decoder-specific random inputs
-# asr_example = torch.randn(1, 512, 78)
-# F0_pred_example = torch.randn(1, 156)
-# N_pred_example = torch.randn(1, 156)
-# ref_s_example = torch.randn(1, 128)
+
+# ----------------------------
+# Decoder - input data loading
+# ----------------------------
+
+# ------------------------------------------------------------------------------------------
+INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
+# ------------------------------------------------------------------------------------------
+
+if INPUT_MODE == "test":
+    data = torch.load("original_models/data/text_decoder_input.pt")
+    asr = data["asr"]
+    F0_pred = data["F0_pred"]
+    N_pred = data["N_pred"]
+    ref_s = data["ref_s"]
+elif INPUT_MODE == "random-small":
+    asr = torch.randn(size=(1, 512, 64))
+    F0_pred = torch.randn(size=(1, 128))
+    N_pred = torch.randn(size=(1, 128))
+    ref_s = torch.randn(size=(1, 128))
+elif INPUT_MODE == "random-medium":
+    asr = torch.randn(size=(1, 512, 256))
+    F0_pred = torch.randn(size=(1, 512))
+    N_pred = torch.randn(size=(1, 512))
+    ref_s = torch.randn(size=(1, 128))
+elif INPUT_MODE == "random-big":
+    asr = torch.randn(size=(1, 512, 1024))
+    F0_pred = torch.randn(size=(1, 4096))
+    N_pred = torch.randn(size=(1, 4096))
+    ref_s = torch.randn(size=(1, 128))
+else:
+    raise RuntimeError("Invalid input mode!")
 
 inputs = (
     asr,
@@ -88,9 +121,11 @@ inputs = (
     N_pred,
     ref_s
 )
-# inputs = tuple(x.double() if x.dtype.is_floating_point else x for x in (asr, F0_pred, N_pred, ref_s))
-# decoder = decoder.double()
 
+
+# -------------------------
+# Decoder - export pipeline
+# -------------------------
 
 # Export
 exported_program = torch.export.export(decoder, inputs)
@@ -102,8 +137,10 @@ executorch_program = to_edge_transform_and_lower(
 
 print_delegation_info(executorch_program.exported_program().graph_module)
 
-# # # Save exported file
-with open("output/model.pte", "wb") as file:
+# Save exported file
+ROOT_DESTINATION = "exported_models/tmp"
+
+with open(f"{ROOT_DESTINATION}/text_decoder_{INPUT_MODE}.pte", "wb") as file:
     file.write(executorch_program.buffer)
 
 print("Finished!")
