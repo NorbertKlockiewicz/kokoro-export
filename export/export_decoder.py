@@ -56,9 +56,9 @@ def remove_weight_norms(decoder):
     modules = [module for module in decoder.decode] + [decoder.encode]
     for module in modules:
         module_weight_norms = [module.conv1, module.conv2]
-        if (hasattr(module.pool, "weight")):
+        if hasattr(module.pool, "weight"):
             module_weight_norms.append(module.pool)
-        if (hasattr(module.conv1x1, "weight")):
+        if hasattr(module, "conv1x1") and hasattr(module.conv1x1, "weight"):
             module_weight_norms.append(module.conv1x1)
         for conv in module_weight_norms:
             _ = conv.weight  # forces parameter update

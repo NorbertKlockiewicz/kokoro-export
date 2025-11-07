@@ -122,5 +122,5 @@ else:
     print(f"\n✓ XNNPACK works! No NaNs!")
     print(f"  Max diff from PyTorch: {diff:.6f}")
 
-    mse = torch.nn.functional.mse_loss(output_et_xnn, output_pytorch)
-    print("  MSE loss:", mse.item())
+    l1 = torch.nn.functional.l1_loss(output_et_xnn, output_pytorch)
+    print("  L1 loss:", l1.item())

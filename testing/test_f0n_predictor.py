@@ -1,20 +1,20 @@
 from kokoro import KModel
 from executorch.runtime import Runtime
-from export.export_duration_predictor import DurationPredictorWrapper
+from export.export_f0n_predictor import F0NPredictorWrapper
 import torch
 
 runtime = Runtime.get()
 
 
-# -------------------------------------
-# Duration predictor - PyTorch instance
-# -------------------------------------
+# --------------------------------
+# F0N Predictor - PyTorch instance
+# --------------------------------
 
 # Create model
 model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
 
-duration_predictor = DurationPredictorWrapper(model)
-duration_predictor.eval()
+f0n_predictor = F0NPredictorWrapper(model)
+f0n_predictor.eval()
 
 
 # -----------------------------
@@ -22,7 +22,7 @@ duration_predictor.eval()
 # -----------------------------
 
 # -------------------------------------------------------------
-pte_path_xnn = "exported_models/tmp/duration_predictor_test.pte"
+pte_path_xnn = "exported_models/tmp/f0n_predictor_test.pte"
 # -------------------------------------------------------------
 
 program_xnn = runtime.load_program(pte_path_xnn)
@@ -40,42 +40,37 @@ input_shapes = [
     tuple(int(x) for x in sizes.split(','))
     for sizes in re.findall(r'sizes=\[([^\]]+)\]', meta_str)
 ]
-input_shapes = input_shapes[:3]     # We expect 3 shapes (3 inputs)
+input_shapes = input_shapes[:2]     # We expect 4 shapes (4 inputs)
 
 # Define all possible input sets
 input_sets = {
     "test": lambda: (
-        torch.load("original_models/data/duration_predictor_input.pt")["input_ids"],
-        torch.load("original_models/data/duration_predictor_input.pt")["ref_s"],
-        torch.load("original_models/data/duration_predictor_input.pt")["speed"],
+        torch.load("original_models/data/f0n_predictor_input.pt")["en"],
+        torch.load("original_models/data/f0n_predictor_input.pt")["s"],
     ),
     "random-small": lambda: (
-        torch.randint(0, 188, size=(1, 16)),
-        torch.randn(size=(1, 256)),
-        torch.randn(size=(1,)),
+        torch.randn(size=(1, 640, 64)),
+        torch.randn(size=(1, 128)),
     ),
     "random-medium": lambda: (
-        torch.randint(0, 188, size=(1, 64)),
-        torch.randn(size=(1, 256)),
-        torch.randn(size=(1,)),
+        torch.randn(size=(1, 640, 256)),
+        torch.randn(size=(1, 128)),
     ),
     "random-big": lambda: (
-        torch.randint(0, 188, size=(1, 256)),
-        torch.randn(size=(1, 256)),
-        torch.randn(size=(1,)),
+        torch.randn(size=(1, 640, 1024)),
+        torch.randn(size=(1, 128)),
     ),
 }
 
 # Map input set names to their shapes
 input_set_shapes = {
     "test": [
-        torch.load("original_models/data/duration_predictor_input.pt")["input_ids"].shape,
-        torch.load("original_models/data/duration_predictor_input.pt")["ref_s"].shape,
-        torch.load("original_models/data/duration_predictor_input.pt")["speed"].shape,
+        torch.load("original_models/data/f0n_predictor_input.pt")["en"].shape,
+        torch.load("original_models/data/f0n_predictor_input.pt")["s"].shape,
     ],
-    "random-small": [(1, 16), (1, 256), (1,),],
-    "random-medium": [(1, 64), (1, 256), (1,),],
-    "random-big": [(1, 256), (1, 256), (1,),],
+    "random-small": [(1, 640, 64), (1, 128),],
+    "random-medium": [(1, 640, 256), (1, 128),],
+    "random-big": [(1, 640, 1024), (1, 128),],
 }
 
 # Find matching input set
@@ -88,28 +83,27 @@ for mode, shapes in input_set_shapes.items():
 if selected_mode is None:
     raise RuntimeError(f"No matching input set for ExecuTorch input shapes: {input_shapes}")
 
-input_ids, ref_s, speed = input_sets[selected_mode]()
+en, s = input_sets[selected_mode]()
 
 print(f"Selected input mode: {selected_mode}")
-print(f"Input shapes: {[x.shape for x in [input_ids, ref_s, speed]]}")
+print(f"Input shapes: {[x.shape for x in [en, s]]}")
 
-inputs = (input_ids, ref_s, speed)
+inputs = (en, s)
 
 
 # -----------------------
 # Decoder - perform tests
 # -----------------------
 
-output_pytorch_pred_dur, output_pytorch_d, output_pytorch_s = duration_predictor(*inputs)
+output_pytorch_F0, output_pytorch_N = f0n_predictor(*inputs)
 
 print("\nTesting ExecuTorch runtime (WITH XNNPACK)...")
-outputs_xnn = method_xnn.execute((input_ids, ref_s, speed))
-output_pred_dur_xnn, output_d_xnn, output_s_xnn = outputs_xnn
+outputs_xnn = method_xnn.execute((en, s))
+output_F0_xnn, output_N_xnn = outputs_xnn
 
 outputs = [
-    ("pred_dur", output_pytorch_pred_dur, output_pred_dur_xnn),
-    ("d", output_pytorch_d, output_d_xnn),
-    ("s", output_pytorch_s, output_s_xnn),
+    ("F0", output_pytorch_F0, output_F0_xnn),
+    ("N", output_pytorch_N, output_N_xnn),
 ]
 
 for name, output_pytorch, output_et_xnn in outputs:
