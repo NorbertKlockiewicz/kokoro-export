@@ -1,12 +1,14 @@
 import spaces
-from kokoro import KModel, KPipeline
+from kokoro import KModel
+from kokoro.model_exported import KModelPTE
+from kokoro.pipeline import KPipeline
 import gradio as gr
 import os
 import random
 import torch
 
 CUDA_AVAILABLE = torch.cuda.is_available()
-models = {gpu: KModel().to('cuda' if gpu else 'cpu').eval() for gpu in [False] + ([True] if CUDA_AVAILABLE else [])}
+models = {gpu: KModelPTE().to('cuda' if gpu else 'cpu').eval() for gpu in [False] + ([True] if CUDA_AVAILABLE else [])}
 pipelines = {lang_code: KPipeline(lang_code=lang_code, model=False) for lang_code in 'ab'}
 pipelines['a'].g2p.lexicon.golds['kokoro'] = 'kˈOkəɹO'
 pipelines['b'].g2p.lexicon.golds['kokoro'] = 'kˈQkəɹQ'
@@ -70,7 +72,7 @@ def generate_all(text, voice='af_heart', speed=1, use_gpu=CUDA_AVAILABLE):
             first = False
             yield 24000, torch.zeros(1).numpy()
 
-with open('en.txt', 'r') as r:
+with open('demo/en.txt', 'r') as r:
     random_quotes = [line.strip() for line in r]
 
 def get_random_quote():
