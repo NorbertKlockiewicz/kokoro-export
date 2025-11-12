@@ -11,8 +11,12 @@ import pandas as pd
 import subprocess
 import torch
 import warnings
+import sys
 
 warnings.filterwarnings("ignore")
+
+
+# NOTE: The profiler always uses the test data
 
 
 # ----------------------------
@@ -20,19 +24,36 @@ warnings.filterwarnings("ignore")
 # ----------------------------
 
 print("Loading input data for decoder...")
-data = torch.load("original_models/data/text_decoder_input.pt")
-asr = data["asr"]
-F0_pred = data["F0_pred"]
-N_pred = data["N_pred"]
-ref_s = data["ref_s"]
 
-inputs = (
-    asr,
-    F0_pred,
-    N_pred,
-    ref_s
-)
-print("Input data loaded.")
+# Parse input argument
+if len(sys.argv) < 2:
+    print("Usage: python profile.py [duration_predictor|f0n_predictor|text_encoder|text_decoder]")
+    sys.exit(1)
+model_arg = sys.argv[1]
+if model_arg not in ("duration_predictor", "f0n_predictor", "text_encoder", "text_decoder"):
+    print("Invalid argument. Must be one of: duration_predictor, f0n_predictor, text_encoder, text_decoder")
+    sys.exit(1)
+
+# Map argument to input file and import
+input_file = f"original_models/data/{model_arg}_input.pt"
+data = torch.load(input_file)
+
+if model_arg == "duration_predictor":
+    from export.export_duration_predictor import convert_to_executorch_program
+    inputs = (data["input_ids"], data["ref_s"], data["speed"])
+elif model_arg == "f0n_predictor":
+    from export.export_f0n_predictor import convert_to_executorch_program
+    inputs = (data["en"], data["s"])
+elif model_arg == "text_encoder":
+    from export.export_encoder import convert_to_executorch_program
+    inputs = (data["input_ids"], data["input_lengths"], data["text_mask"])
+elif model_arg == "text_decoder":
+    from export.export_decoder import convert_to_executorch_program
+    inputs = (data["asr"], data["F0_pred"], data["N_pred"], data["ref_s"])
+else:
+    raise RuntimeError("Unknown model_arg")
+
+print(f"Input data for {model_arg} loaded.")
 
 
 # ------------
@@ -111,5 +132,5 @@ etdump_path = f"{PROFILE_ARTIFACTS_ROOT}/etdump.etdp"
 
 inspector = Inspector(etdump_path=etdump_path, etrecord=etrecord_path)
 tabular_data = inspector.to_dataframe()
-tabular_data.to_csv(f"{PROFILE_RESULTS_ROOT}/profiling_results.csv", index=False)
-print(f"Profiling results saved to {PROFILE_RESULTS_ROOT}/profiling_results.csv")
+tabular_data.to_csv(f"{PROFILE_RESULTS_ROOT}/profiling_results_{model_arg}.csv", index=False)
+print(f"Profiling results saved to {PROFILE_RESULTS_ROOT}/profiling_results_{model_arg}.csv")

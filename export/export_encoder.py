@@ -27,7 +27,10 @@ class TextEncoderWrapper(Module):
 
 # Get rid of all weight_norm decllarations to enable delegating the convolutions to XNNPACK backend
 def remove_weight_norms(encoder: TextEncoderWrapper):
-    pass
+    for module in encoder.text_encoder.cnn:
+        conv = module[0]
+        _ = conv.weight  # forces parameter update
+        torch.nn.utils.parametrize.remove_parametrizations(conv, "weight", leave_parametrized=True)
 
 
 # ----------------------------
@@ -35,7 +38,7 @@ def remove_weight_norms(encoder: TextEncoderWrapper):
 # ----------------------------
 
 # ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
+INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
 # ------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -44,17 +47,26 @@ if __name__ == "__main__":
         input_ids = data["input_ids"]
         input_lengths = data["input_lengths"]
         text_mask = data["text_mask"]
-    # elif INPUT_MODE == "random-small":
-    #     en = torch.randn(size=(1, 640, 64))
-    #     s = torch.randn(size=(1, 128))
-    # elif INPUT_MODE == "random-medium":
-    #     en = torch.randn(size=(1, 640, 256))
-    #     s = torch.randn(size=(1, 128))
-    # elif INPUT_MODE == "random-big":
-    #     en = torch.randn(size=(1, 640, 1024))
-    #     s = torch.randn(size=(1, 128))
-    # else:
-    #     raise RuntimeError("Invalid input mode!")
+    elif INPUT_MODE == "random-small":
+        input_ids = torch.randint(0, 178, size=(1, 16))
+        input_ids[0][0] = 0
+        input_ids[0][15] = 0
+        input_lengths = torch.tensor(input_ids.shape[-1])
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
+    elif INPUT_MODE == "random-medium":
+        input_ids = torch.randint(0, 178, size=(1, 64))
+        input_ids[0][0] = 0
+        input_ids[0][63] = 0
+        input_lengths = torch.tensor(input_ids.shape[-1])
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
+    elif INPUT_MODE == "random-big":
+        input_ids = torch.randint(0, 178, size=(1, 256))
+        input_ids[0][0] = 0
+        input_ids[0][255] = 0
+        input_lengths = torch.tensor(input_ids.shape[-1])
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
+    else:
+        raise RuntimeError("Invalid input mode!")
 
     inputs = (
         input_ids,

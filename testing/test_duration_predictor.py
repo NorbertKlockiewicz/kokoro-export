@@ -22,7 +22,7 @@ duration_predictor.eval()
 # -----------------------------
 
 # -------------------------------------------------------------
-pte_path_xnn = "exported_models/tmp/duration_predictor_test.pte"
+pte_path_xnn = "exported_models/tmp/duration_predictor_random-small.pte"
 # -------------------------------------------------------------
 
 program_xnn = runtime.load_program(pte_path_xnn)

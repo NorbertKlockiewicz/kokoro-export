@@ -64,10 +64,10 @@ class KModelPTE(torch.nn.Module):
         self.context_length = self.bert.config.max_position_embeddings
 
         # Use exported .pte models
-        self.duration_predictor = runtime.load_program("exported_models/duration_predictor.pte").load_method("forward")
-        self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor.pte").load_method("forward")
-        self.text_encoder = runtime.load_program("exported_models/text_encoder.pte").load_method("forward")
-        self.text_decoder = runtime.load_program("exported_models/text_decoder_16.pte").load_method("forward")
+        self.duration_predictor = runtime.load_program("exported_models/duration_predictor_64.pte").load_method("forward")
+        self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor_64.pte").load_method("forward")
+        self.text_encoder = runtime.load_program("exported_models/text_encoder_64.pte").load_method("forward")
+        self.text_decoder = runtime.load_program("exported_models/text_decoder_64.pte").load_method("forward")
 
     @property
     def device(self):
@@ -98,7 +98,8 @@ class KModelPTE(torch.nn.Module):
 
         # Adjustment to fixate the indices length
         # This is a LLM generated shit, replace it with a proper code and algorithm
-        target_len = 78
+        print("Original duration length:", len(indices))
+        target_len = 256
         current_len = indices.shape[0]
         if current_len < target_len:
             # Add missing indices to reach target_len, distribute as evenly as possible
@@ -175,8 +176,10 @@ class KModelPTE(torch.nn.Module):
             self.context_length,
         )
 
+        print("Original number of tokens:", len(input_ids))
+
         # Cut the number of tokens (as models are being exported with static input)
-        TARGET_TOKENS = 16
+        TARGET_TOKENS = 64
         while len(input_ids) < (TARGET_TOKENS - 2):
             input_ids.append(0)
         input_ids = input_ids[:(TARGET_TOKENS - 2)]

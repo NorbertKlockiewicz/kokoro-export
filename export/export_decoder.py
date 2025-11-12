@@ -74,7 +74,7 @@ def remove_weight_norms(decoder):
 # ----------------------------
 
 # ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
+INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
 # ------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":

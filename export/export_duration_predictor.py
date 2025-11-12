@@ -48,7 +48,7 @@ class DurationPredictorWrapper(Module):
 # ---------------------------------------
 
 # ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
+INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
 # ------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -58,20 +58,23 @@ if __name__ == "__main__":
         ref_s = data["ref_s"]
         speed = data["speed"]
     elif INPUT_MODE == "random-small":
-        input_ids = torch.randint(0, 188, size=(1, 14))
-        input_ids = torch.LongTensor([[0, *input_ids, 0]])
+        input_ids = torch.randint(0, 178, size=(1, 16))
+        input_ids[0][0] = 0
+        input_ids[0][15] = 0
         ref_s = torch.randn(size=(1, 256))
-        speed = torch.randn(size=(1))
+        speed = torch.tensor([1.0], dtype=torch.float32)
     elif INPUT_MODE == "random-medium":
-        input_ids = torch.randint(0, 188, size=(1, 62))
-        input_ids = torch.LongTensor([[0, *input_ids, 0]])
+        input_ids = torch.randint(0, 178, size=(1, 64))
+        input_ids[0][0] = 0
+        input_ids[0][63] = 0
         ref_s = torch.randn(size=(1, 256))
-        speed = torch.randn(size=(1))
+        speed = torch.tensor([1.0], dtype=torch.float32)
     elif INPUT_MODE == "random-big":
-        input_ids = torch.randint(0, 188, size=(1, 254))
-        input_ids = torch.LongTensor([[0, *input_ids, 0]])
+        input_ids = torch.randint(0, 178, size=(1, 256))
+        input_ids[0][0] = 0
+        input_ids[0][255] = 0
         ref_s = torch.randn(size=(1, 256))
-        speed = torch.randn(size=(1))
+        speed = torch.tensor([1.0], dtype=torch.float32)
     else:
         raise RuntimeError("Invalid input mode!")
 

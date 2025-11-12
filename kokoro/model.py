@@ -183,10 +183,10 @@ class KModel(torch.nn.Module):
         )
 
         # Cut the number of tokens (as models are being exported with static input)
-        TARGET_TOKENS = 16
-        while len(input_ids) < (TARGET_TOKENS - 2):
-            input_ids.append(0)
-        input_ids = input_ids[:(TARGET_TOKENS - 2)]
+        # TARGET_TOKENS = 16
+        # while len(input_ids) < (TARGET_TOKENS - 2):
+        #     input_ids.append(0)
+        # input_ids = input_ids[:(TARGET_TOKENS - 2)]
         input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
 
         ref_s = ref_s.to(self.device)

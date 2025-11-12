@@ -182,4 +182,8 @@ exported_models/tmp/*.pte
 
 # Non-model artifacts
 profiling/artifacts/**
+profiling/results/**
 !profiling/artifacts/.gitkeep
+
+# Other artifacts
+*.DS_Store

@@ -61,7 +61,7 @@ def remove_weight_norms(f0n_predictor: F0NPredictorWrapper):
 # ----------------------------
 
 # ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "test"
+INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
 # ------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":

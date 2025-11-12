@@ -22,7 +22,7 @@ encoder.eval()
 # -----------------------------
 
 # -------------------------------------------------------------
-pte_path_xnn = "exported_models/text_encoder.pte"
+pte_path_xnn = "exported_models/tmp/text_encoder_test.pte"
 # -------------------------------------------------------------
 
 program_xnn = runtime.load_program(pte_path_xnn)
@@ -53,24 +53,29 @@ input_sets = {
         torch.load("original_models/data/text_encoder_input.pt")["input_lengths"],
         torch.load("original_models/data/text_encoder_input.pt")["text_mask"],
     ),
-    # "random-small": lambda: (
-    #     torch.randn(size=(1, 512, 64)),
-    #     torch.randn(size=(1, 128)),
-    #     torch.randn(size=(1, 128)),
-    #     torch.randn(size=(1, 128)),
-    # ),
-    # "random-medium": lambda: (
-    #     torch.randn(size=(1, 512, 256)),
-    #     torch.randn(size=(1, 512)),
-    #     torch.randn(size=(1, 512)),
-    #     torch.randn(size=(1, 128)),
-    # ),
-    # "random-big": lambda: (
-    #     torch.randn(size=(1, 512, 1024)),
-    #     torch.randn(size=(1, 4096)),
-    #     torch.randn(size=(1, 4096)),
-    #     torch.randn(size=(1, 128)),
-    # ),
+    "random-small": lambda: (
+        # Ensure 0 at the beginning and end
+        lambda arr: arr.index_fill_(1, torch.tensor([0, arr.shape[1]-1]), 0) or arr
+        (lambda arr: arr.index_fill_(1, torch.tensor([0, arr.shape[1]-1]), 0) or arr)(
+            torch.randint(0, 178, size=(1, 16))
+        ),
+        torch.tensor(16),
+        torch.ones((1, 16), dtype=torch.bool),
+    ),
+    "random-medium": lambda: (
+        (lambda arr: arr.index_fill_(1, torch.tensor([0, arr.shape[1]-1]), 0) or arr)(
+            torch.randint(0, 178, size=(1, 64))
+        ),
+        torch.tensor(64),
+        torch.ones((1, 64), dtype=torch.bool),
+    ),
+    "random-big": lambda: (
+        (lambda arr: arr.index_fill_(1, torch.tensor([0, arr.shape[1]-1]), 0) or arr)(
+            torch.randint(0, 178, size=(1, 256))
+        ),
+        torch.tensor(256),
+        torch.ones((1, 256), dtype=torch.bool),
+    ),
 }
 
 # Map input set names to their shapes
@@ -80,9 +85,9 @@ input_set_shapes = {
         torch.load("original_models/data/text_encoder_input.pt")["input_lengths"].shape,
         torch.load("original_models/data/text_encoder_input.pt")["text_mask"].shape
     ],
-    # "random-small": [(1, 512, 64), (1, 128), (1, 128), (1, 128)],
-    # "random-medium": [(1, 512, 256), (1, 512), (1, 512), (1, 128)],
-    # "random-big": [(1, 512, 1024), (1, 4096), (1, 4096), (1, 128)],
+    "random-small": [(1, 16), (), (1, 16),],
+    "random-medium": [(1, 64), (), (1, 64),],
+    "random-big": [(1, 256), (), (1, 256),],
 }
 
 # Find matching input set
