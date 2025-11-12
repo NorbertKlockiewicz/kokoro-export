@@ -1,5 +1,6 @@
 from .istftnet import Decoder
 from .modules import CustomAlbert
+from .temporal_scaling import scale
 from dataclasses import dataclass
 from executorch.runtime import Runtime
 from huggingface_hub import hf_hub_download
@@ -64,10 +65,14 @@ class KModelPTE(torch.nn.Module):
         self.context_length = self.bert.config.max_position_embeddings
 
         # Use exported .pte models
-        self.duration_predictor = runtime.load_program("exported_models/duration_predictor_64.pte").load_method("forward")
-        self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor_64.pte").load_method("forward")
-        self.text_encoder = runtime.load_program("exported_models/text_encoder_64.pte").load_method("forward")
-        self.text_decoder = runtime.load_program("exported_models/text_decoder_64.pte").load_method("forward")
+        # self.duration_predictor = runtime.load_program("exported_models/duration_predictor_16.pte").load_method("forward")
+        # self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor_16.pte").load_method("forward")
+        # self.text_encoder = runtime.load_program("exported_models/text_encoder_16.pte").load_method("forward")
+        # self.text_decoder = runtime.load_program("exported_models/text_decoder_16.pte").load_method("forward")
+        self.duration_predictor = runtime.load_program("exported_models/duration_predictor_16.pte").load_method("forward")
+        self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor_16.pte").load_method("forward")
+        self.text_encoder = runtime.load_program("exported_models/text_encoder_16.pte").load_method("forward")
+        self.text_decoder = runtime.load_program("exported_models/text_decoder_16.pte").load_method("forward")
 
     @property
     def device(self):
@@ -99,35 +104,9 @@ class KModelPTE(torch.nn.Module):
         # Adjustment to fixate the indices length
         # This is a LLM generated shit, replace it with a proper code and algorithm
         print("Original duration length:", len(indices))
-        target_len = 256
-        current_len = indices.shape[0]
-        if current_len < target_len:
-            # Add missing indices to reach target_len, distribute as evenly as possible
-            missing = target_len - current_len
-            # Count occurrences of each index
-            unique_indices = torch.arange(input_ids.shape[1], device=indices.device)
-            counts = torch.stack([(indices == idx).sum() for idx in unique_indices])
-            # Add indices with the lowest counts first
-            for _ in range(missing):
-                min_count = counts.min()
-                candidates = (counts == min_count).nonzero(as_tuple=True)[0]
-                # Pick the lowest index among candidates
-                idx_to_add = candidates[0].item()
-                indices = torch.cat([indices, torch.tensor([idx_to_add], dtype=indices.dtype, device=indices.device)])
-                counts[idx_to_add] += 1
-        elif current_len > target_len:
-            # Remove leading indices to reduce length, try to keep balance
-            num_to_remove = current_len - target_len
-            # Remove indices with the highest count first
-            for _ in range(num_to_remove):
-                unique_indices = torch.arange(input_ids.shape[1], device=indices.device)
-                counts = torch.stack([(indices == idx).sum() for idx in unique_indices])
-                max_count = counts.max()
-                candidates = (counts == max_count).nonzero(as_tuple=True)[0]
-                # Remove the first occurrence of the highest count index
-                idx_to_remove = candidates[0].item()
-                remove_idx = (indices == idx_to_remove).nonzero(as_tuple=True)[0][0].item()
-                indices = torch.cat([indices[:remove_idx], indices[remove_idx+1:]])
+        target_len = 64
+
+        indices = scale(indices, target_len)
 
         pred_aln_trg = torch.zeros(
             (input_ids.shape[1], indices.shape[0]), device=self.device
@@ -179,7 +158,7 @@ class KModelPTE(torch.nn.Module):
         print("Original number of tokens:", len(input_ids))
 
         # Cut the number of tokens (as models are being exported with static input)
-        TARGET_TOKENS = 64
+        TARGET_TOKENS = 16
         while len(input_ids) < (TARGET_TOKENS - 2):
             input_ids.append(0)
         input_ids = input_ids[:(TARGET_TOKENS - 2)]

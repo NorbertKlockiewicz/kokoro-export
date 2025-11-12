@@ -133,6 +133,7 @@ class KModel(torch.nn.Module):
         indices = torch.repeat_interleave(
             torch.arange(input_ids.shape[1], device=self.device), pred_dur
         )
+        return len(indices)
         torch._check(indices.shape[0] > 0)
         torch._check_is_size(indices.shape[0])
         pred_aln_trg = torch.zeros(
@@ -172,6 +173,7 @@ class KModel(torch.nn.Module):
         ref_s: torch.FloatTensor,
         speed: float = 1,
         return_output: bool = False,
+        target_tokens: int | None = None
     ) -> Union["KModel.Output", torch.FloatTensor]:
         input_ids = list(
             filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), phonemes))
@@ -183,19 +185,22 @@ class KModel(torch.nn.Module):
         )
 
         # Cut the number of tokens (as models are being exported with static input)
-        # TARGET_TOKENS = 16
-        # while len(input_ids) < (TARGET_TOKENS - 2):
-        #     input_ids.append(0)
-        # input_ids = input_ids[:(TARGET_TOKENS - 2)]
+        if target_tokens:
+            while len(input_ids) < (target_tokens - 2):
+                input_ids.append(0)
+            input_ids = input_ids[:(target_tokens - 2)]
         input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
 
         ref_s = ref_s.to(self.device)
-        audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
-        audio = audio.squeeze().cpu()
-        pred_dur = pred_dur.cpu() if pred_dur is not None else None
-        logger.debug(f"pred_dur: {pred_dur}")
+
+        return self.forward_with_tokens(input_ids, ref_s, speed)
+
+        # audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
+        # audio = audio.squeeze().cpu()
+        # pred_dur = pred_dur.cpu() if pred_dur is not None else None
+        # logger.debug(f"pred_dur: {pred_dur}")
         
-        return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
+        # return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
 
 class KModelForONNX(torch.nn.Module):
