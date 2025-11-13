@@ -22,7 +22,7 @@ duration_predictor.eval()
 # -----------------------------
 
 # -------------------------------------------------------------
-pte_path_xnn = "exported_models/tmp/duration_predictor_random-small.pte"
+pte_path_xnn = "exported_models/duration_predictor_64_new.pte"
 # -------------------------------------------------------------
 
 program_xnn = runtime.load_program(pte_path_xnn)
@@ -48,21 +48,25 @@ input_sets = {
         torch.load("original_models/data/duration_predictor_input.pt")["input_ids"],
         torch.load("original_models/data/duration_predictor_input.pt")["ref_s"],
         torch.load("original_models/data/duration_predictor_input.pt")["speed"],
+        torch.ones((1, 16), dtype=torch.bool)
     ),
     "random-small": lambda: (
-        torch.randint(0, 188, size=(1, 16)),
+        torch.randint(0, 178, size=(1, 16)),
         torch.randn(size=(1, 256)),
         torch.randn(size=(1,)),
+        torch.ones((1, 16), dtype=torch.bool)
     ),
     "random-medium": lambda: (
-        torch.randint(0, 188, size=(1, 64)),
+        torch.randint(0, 178, size=(1, 64)),
         torch.randn(size=(1, 256)),
         torch.randn(size=(1,)),
+        torch.ones((1, 64), dtype=torch.bool)
     ),
     "random-big": lambda: (
-        torch.randint(0, 188, size=(1, 256)),
+        torch.randint(0, 178, size=(1, 256)),
         torch.randn(size=(1, 256)),
         torch.randn(size=(1,)),
+        torch.ones((1, 256), dtype=torch.bool)
     ),
 }
 
@@ -72,10 +76,11 @@ input_set_shapes = {
         torch.load("original_models/data/duration_predictor_input.pt")["input_ids"].shape,
         torch.load("original_models/data/duration_predictor_input.pt")["ref_s"].shape,
         torch.load("original_models/data/duration_predictor_input.pt")["speed"].shape,
+        torch.ones((1, 16), dtype=torch.bool)
     ],
-    "random-small": [(1, 16), (1, 256), (1,),],
-    "random-medium": [(1, 64), (1, 256), (1,),],
-    "random-big": [(1, 256), (1, 256), (1,),],
+    "random-small": [(1, 16), (1, 256), (1,), (1, 16),],
+    "random-medium": [(1, 64), (1, 256), (1,), (1, 64),],
+    "random-big": [(1, 256), (1, 256), (1,), (1, 256),],
 }
 
 # Find matching input set
@@ -88,22 +93,23 @@ for mode, shapes in input_set_shapes.items():
 if selected_mode is None:
     raise RuntimeError(f"No matching input set for ExecuTorch input shapes: {input_shapes}")
 
-input_ids, ref_s, speed = input_sets[selected_mode]()
+input_ids, ref_s, speed, text_mask = input_sets[selected_mode]()
 
 print(f"Selected input mode: {selected_mode}")
-print(f"Input shapes: {[x.shape for x in [input_ids, ref_s, speed]]}")
+print(f"Input shapes: {[x.shape for x in [input_ids, ref_s, speed, text_mask]]}")
 
-inputs = (input_ids, ref_s, speed)
+inputs = (input_ids, ref_s, speed, text_mask)
 
 
 # -----------------------
 # Decoder - perform tests
 # -----------------------
 
+print(inputs)
 output_pytorch_pred_dur, output_pytorch_d, output_pytorch_s = duration_predictor(*inputs)
 
 print("\nTesting ExecuTorch runtime (WITH XNNPACK)...")
-outputs_xnn = method_xnn.execute((input_ids, ref_s, speed))
+outputs_xnn = method_xnn.execute((input_ids, ref_s, speed, text_mask))
 output_pred_dur_xnn, output_d_xnn, output_s_xnn = outputs_xnn
 
 outputs = [

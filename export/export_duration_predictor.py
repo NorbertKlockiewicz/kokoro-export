@@ -2,7 +2,6 @@ from kokoro import KModel
 from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
 from executorch.devtools.backend_debug import print_delegation_info, get_delegation_info
 from executorch.exir import to_edge_transform_and_lower
-from huggingface_hub import hf_hub_download
 from torch.nn import Module
 from typing import Literal
 import torch
@@ -20,9 +19,9 @@ class DurationPredictorWrapper(Module):
         self.lstm = model.predictor.lstm
         self.duration_proj = model.predictor.duration_proj
 
-    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.Tensor):
+    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.Tensor, 
+                      text_mask: torch.BoolTensor):
         input_lengths = torch.tensor(input_ids.shape[-1])
-        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
 
         bert_dur = self.bert(input_ids, attention_mask=text_mask.int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
@@ -57,31 +56,36 @@ if __name__ == "__main__":
         input_ids = data["input_ids"]
         ref_s = data["ref_s"]
         speed = data["speed"]
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
     elif INPUT_MODE == "random-small":
         input_ids = torch.randint(0, 178, size=(1, 16))
         input_ids[0][0] = 0
         input_ids[0][15] = 0
         ref_s = torch.randn(size=(1, 256))
         speed = torch.tensor([1.0], dtype=torch.float32)
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
     elif INPUT_MODE == "random-medium":
         input_ids = torch.randint(0, 178, size=(1, 64))
         input_ids[0][0] = 0
         input_ids[0][63] = 0
         ref_s = torch.randn(size=(1, 256))
         speed = torch.tensor([1.0], dtype=torch.float32)
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
     elif INPUT_MODE == "random-big":
         input_ids = torch.randint(0, 178, size=(1, 256))
         input_ids[0][0] = 0
         input_ids[0][255] = 0
         ref_s = torch.randn(size=(1, 256))
         speed = torch.tensor([1.0], dtype=torch.float32)
+        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
     else:
         raise RuntimeError("Invalid input mode!")
 
     inputs = (
         input_ids,
         ref_s,
-        speed
+        speed,
+        text_mask
     )
 
 
@@ -97,7 +101,6 @@ def convert_to_executorch_program(inputs):
     # Apply modifications
     # ...
 
-    # Export
     exported_program = torch.export.export(duration_predictor, inputs)
 
     executorch_program = to_edge_transform_and_lower(

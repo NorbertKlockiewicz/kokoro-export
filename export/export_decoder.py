@@ -90,9 +90,9 @@ if __name__ == "__main__":
         N_pred = torch.randn(size=(1, 128))
         ref_s = torch.randn(size=(1, 128))
     elif INPUT_MODE == "random-medium":
-        asr = torch.randn(size=(1, 512, 256))
-        F0_pred = torch.randn(size=(1, 512))
-        N_pred = torch.randn(size=(1, 512))
+        asr = torch.randn(size=(1, 512, 164))
+        F0_pred = torch.randn(size=(1, 328))
+        N_pred = torch.randn(size=(1, 328))
         ref_s = torch.randn(size=(1, 128))
     elif INPUT_MODE == "random-big":
         asr = torch.randn(size=(1, 512, 1024))

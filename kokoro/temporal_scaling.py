@@ -36,6 +36,6 @@ def scale(indices: torch.Tensor, target_len: int,
     diff_table.sort(key=lambda x: x[1], reverse=True)
 
     for i in range(remaining):
-      b[i] += 1 if up else -1
+      b[diff_table[i][0]] += 1 if up else -1
     
     return counters_to_indices(b)

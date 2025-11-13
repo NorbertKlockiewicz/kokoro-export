@@ -61,7 +61,7 @@ def remove_weight_norms(f0n_predictor: F0NPredictorWrapper):
 # ----------------------------
 
 # ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
+INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-small"
 # ------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -73,10 +73,10 @@ if __name__ == "__main__":
         en = torch.randn(size=(1, 640, 64))
         s = torch.randn(size=(1, 128))
     elif INPUT_MODE == "random-medium":
-        en = torch.randn(size=(1, 640, 256))
+        en = torch.randn(size=(1, 640, 164))
         s = torch.randn(size=(1, 128))
     elif INPUT_MODE == "random-big":
-        en = torch.randn(size=(1, 640, 1024))
+        en = torch.randn(size=(1, 640, 556))
         s = torch.randn(size=(1, 128))
     else:
         raise RuntimeError("Invalid input mode!")
