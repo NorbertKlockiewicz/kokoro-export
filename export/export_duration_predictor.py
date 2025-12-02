@@ -4,6 +4,7 @@ from executorch.devtools.backend_debug import print_delegation_info, get_delegat
 from executorch.exir import to_edge_transform_and_lower
 from torch.nn import Module
 from typing import Literal
+import argparse
 import torch
 
 # ---------------------------------------
@@ -19,10 +20,9 @@ class DurationPredictorWrapper(Module):
         self.lstm = model.predictor.lstm
         self.duration_proj = model.predictor.duration_proj
 
-    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.Tensor, 
+    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.Tensor,
                       text_mask: torch.BoolTensor):
         input_lengths = torch.tensor(input_ids.shape[-1])
-
         bert_dur = self.bert(input_ids, attention_mask=text_mask.int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
         s = ref_s[:, 128:]
@@ -31,7 +31,6 @@ class DurationPredictorWrapper(Module):
         duration = self.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
-
         return pred_dur, d, s
 
 
@@ -42,84 +41,128 @@ class DurationPredictorWrapper(Module):
 # ...
 
 
-# ---------------------------------------
-# Duration predictor - input data loading
-# ---------------------------------------
+# --------------------------------------------
+# Duration predictor - input data definition
+# --------------------------------------------
 
-# ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
-# ------------------------------------------------------------------------------------------
+# Predefined inputs for export sizes
+inputs_dict = {
+    "test": (
+        torch.load("original_models/data/duration_predictor_input.pt")["input_ids"],
+        torch.load("original_models/data/duration_predictor_input.pt")["ref_s"],
+        torch.load("original_models/data/duration_predictor_input.pt")["speed"],
+        torch.ones((1, torch.load("original_models/data/duration_predictor_input.pt")["input_ids"].shape[-1]), dtype=torch.bool),
+    ),
+    "small": (
+        torch.randint(0, 178, size=(1, 16)),
+        torch.randn(size=(1, 256)),
+        torch.tensor([1.0], dtype=torch.float32),
+        torch.ones((1, 16), dtype=torch.bool),
+    ),
+    "medium": (
+        torch.randint(0, 178, size=(1, 64)),
+        torch.randn(size=(1, 256)),
+        torch.tensor([1.0], dtype=torch.float32),
+        torch.ones((1, 64), dtype=torch.bool),
+    ),
+    "big": (
+        torch.randint(0, 178, size=(1, 256)),
+        torch.randn(size=(1, 256)),
+        torch.tensor([1.0], dtype=torch.float32),
+        torch.ones((1, 256), dtype=torch.bool),
+    ),
+}
 
-if __name__ == "__main__":
-    if INPUT_MODE == "test":
-        data = torch.load("original_models/data/duration_predictor_input.pt")
-        input_ids = data["input_ids"]
-        ref_s = data["ref_s"]
-        speed = data["speed"]
-        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
-    elif INPUT_MODE == "random-small":
-        input_ids = torch.randint(0, 178, size=(1, 16))
-        input_ids[0][0] = 0
-        input_ids[0][15] = 0
-        ref_s = torch.randn(size=(1, 256))
-        speed = torch.tensor([1.0], dtype=torch.float32)
-        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
-    elif INPUT_MODE == "random-medium":
-        input_ids = torch.randint(0, 178, size=(1, 64))
-        input_ids[0][0] = 0
-        input_ids[0][63] = 0
-        ref_s = torch.randn(size=(1, 256))
-        speed = torch.tensor([1.0], dtype=torch.float32)
-        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
-    elif INPUT_MODE == "random-big":
-        input_ids = torch.randint(0, 178, size=(1, 256))
-        input_ids[0][0] = 0
-        input_ids[0][255] = 0
-        ref_s = torch.randn(size=(1, 256))
-        speed = torch.tensor([1.0], dtype=torch.float32)
-        text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
-    else:
-        raise RuntimeError("Invalid input mode!")
-
-    inputs = (
-        input_ids,
-        ref_s,
-        speed,
-        text_mask
-    )
-
+# Keys: input size names -> Values: equivalent number of input tokens
+input_name_mappings = {
+    "test": "test",
+    "small": "16",
+    "medium": "64",
+    "big": "256",
+}
 
 # ------------------------------------
 # Duration predictor - export pipeline
 # ------------------------------------
 
-def convert_to_executorch_program(inputs):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
     model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
     duration_predictor = DurationPredictorWrapper(model)
     duration_predictor.eval()
 
-    # Apply modifications
+    # Apply modifications (none for duration predictor)
     # ...
 
     exported_program = torch.export.export(duration_predictor, inputs)
 
+    if not transform_and_lower:
+        return duration_predictor, exported_program
+
     executorch_program = to_edge_transform_and_lower(
         exported_program,
-        partitioner = [XnnpackPartitioner()]
+        partitioner=[XnnpackPartitioner()],
     )
 
     return duration_predictor, executorch_program
 
+# -------------------------------
+# Duration predictor - CLI entry
+# -------------------------------
+
 if __name__ == "__main__":
-    _, executorch_program = convert_to_executorch_program(inputs)
-    executorch_program = executorch_program.to_executorch()
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-size", choices=["test", "small", "medium", "big"], required=False)
+    parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
+    args = parser.parse_args()
 
-    print_delegation_info(executorch_program.exported_program().graph_module)
+    # Mode selection
+    if args.bundled is False and args.input_size is None:
+        raise RuntimeError("--input-size is required when bundled == false")
 
-    # Save exported file
+    bundled = args.bundled
+    input_mode = args.input_size if not bundled else "medium"
+
     ROOT_DESTINATION = "exported_models/tmp"
 
-    with open(f"{ROOT_DESTINATION}/duration_predictor_{INPUT_MODE}.pte", "wb") as file:
-        file.write(executorch_program.buffer)
+    if not bundled:
+        # Single export
+        print(f"Exporting duration predictor with {input_mode} input...")
+        input_alias = input_name_mappings[input_mode]
+        inputs = inputs_dict[input_mode]
+
+        if input_mode in ["small", "medium", "big"]:
+            input_ids = inputs[0]
+            input_ids[0][0] = 0
+            input_ids[0][-1] = 0
+
+        _, edge_program = convert_to_executorch_program(inputs)
+        executorch_program = edge_program.to_executorch()
+
+        print_delegation_info(executorch_program.exported_program().graph_module)
+
+        with open(f"{ROOT_DESTINATION}/duration_predictor_{input_alias}.pte", "wb") as file:
+            executorch_program.write_to_file(file)
+    else:
+        # Bundled export: multiple entry points
+        print("Exporting bundled duration predictor...")
+
+        predictors = {}
+        for name, n_tokens in input_name_mappings.items():
+            inputs = inputs_dict[name]
+            if name in ["small", "medium", "big"]:
+                input_ids = inputs[0]
+                input_ids[0][0] = 0
+                input_ids[0][-1] = 0
+            _, exported_predictor = convert_to_executorch_program(inputs_dict[name], transform_and_lower=False)
+            predictors[n_tokens] = exported_predictor
+
+        executorch_program = to_edge_transform_and_lower(
+            {f"forward_{n_tokens}": ep for n_tokens, ep in predictors.items()},
+            partitioner=[XnnpackPartitioner()],
+        ).to_executorch()
+
+        with open(f"{ROOT_DESTINATION}/duration_predictor.pte", "wb") as file:
+            executorch_program.write_to_file(file)
 
     print("Finished!")

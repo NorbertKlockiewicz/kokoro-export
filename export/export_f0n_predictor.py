@@ -4,6 +4,7 @@ from executorch.devtools.backend_debug import print_delegation_info, get_delegat
 from executorch.exir import to_edge_transform_and_lower
 from torch.nn import Module
 from typing import Literal
+import argparse
 import torch
 
 # ----------------------------------
@@ -56,42 +57,41 @@ def remove_weight_norms(f0n_predictor: F0NPredictorWrapper):
             torch.nn.utils.parametrize.remove_parametrizations(conv, "weight", leave_parametrized=True)
 
 
-# ----------------------------
-# Decoder - input data loading
-# ----------------------------
+# --------------------------------
+# F0N Predictor - input definition
+# --------------------------------
 
-# ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-small"
-# ------------------------------------------------------------------------------------------
+inputs_dict = {
+    "test": (
+        torch.load("original_models/data/f0n_predictor_input.pt")["en"],
+        torch.load("original_models/data/f0n_predictor_input.pt")["s"],
+    ),
+    "small": (
+        torch.randn(size=(1, 640, 64)),
+        torch.randn(size=(1, 128)),
+    ),
+    "medium": (
+        torch.randn(size=(1, 640, 164)),
+        torch.randn(size=(1, 128)),
+    ),
+    "big": (
+        torch.randn(size=(1, 640, 556)),
+        torch.randn(size=(1, 128)),
+    ),
+}
 
-if __name__ == "__main__":
-    if INPUT_MODE == "test":
-        data = torch.load("original_models/data/f0n_predictor_input.pt")
-        en = data["en"]
-        s = data["s"]
-    elif INPUT_MODE == "random-small":
-        en = torch.randn(size=(1, 640, 64))
-        s = torch.randn(size=(1, 128))
-    elif INPUT_MODE == "random-medium":
-        en = torch.randn(size=(1, 640, 164))
-        s = torch.randn(size=(1, 128))
-    elif INPUT_MODE == "random-big":
-        en = torch.randn(size=(1, 640, 556))
-        s = torch.randn(size=(1, 128))
-    else:
-        raise RuntimeError("Invalid input mode!")
-
-    inputs = (
-        en,
-        s
-    )
-
+input_name_mappings = {
+    "test": "test",
+    "small": "16",
+    "medium": "64",
+    "big": "256",
+}
 
 # -------------------------
-# Decoder - export pipeline
+# F0N Predictor - pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
     model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
     f0n_predictor = F0NPredictorWrapper(model)
     f0n_predictor.eval()
@@ -102,23 +102,63 @@ def convert_to_executorch_program(inputs):
     # Export
     exported_program = torch.export.export(f0n_predictor, inputs)
 
+    if not transform_and_lower:
+        return f0n_predictor, exported_program
+
     executorch_program = to_edge_transform_and_lower(
         exported_program,
-        partitioner = [XnnpackPartitioner()]
+        partitioner=[XnnpackPartitioner()],
     )
 
     return f0n_predictor, executorch_program
 
+# ------------------------------
+# F0N Predictor - CLI entrypoint
+# ------------------------------
+
 if __name__ == "__main__":
-    _, executorch_program = convert_to_executorch_program(inputs)
-    executorch_program = executorch_program.to_executorch()
+    # Arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-size", choices=["test", "small", "medium", "big"], required=False)
+    parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
+    args = parser.parse_args()
 
-    print_delegation_info(executorch_program.exported_program().graph_module)
+    # Mode selection
+    if args.bundled is False and args.input_size is None:
+        raise RuntimeError("--input-size is required when bundled == false")
 
-    # Save exported file
-    ROOT_DESTINATION = "exported_models/tmp"
+    bundled = args.bundled
+    input_mode = args.input_size if not bundled else "medium"
 
-    with open(f"{ROOT_DESTINATION}/f0n_predictor_{INPUT_MODE}.pte", "wb") as file:
-        file.write(executorch_program.buffer)
+    root_destination = "exported_models/tmp"
+
+    if not bundled:
+        # Single export
+        print(f"Exporting F0N predictor with {input_mode} input...")
+        input_alias = input_name_mappings[input_mode]
+        inputs = inputs_dict[input_mode]
+
+        _, edge_program = convert_to_executorch_program(inputs)
+        executorch_program = edge_program.to_executorch()
+
+        print_delegation_info(executorch_program.exported_program().graph_module)
+
+        with open(f"{root_destination}/f0n_predictor_{input_alias}.pte", "wb") as file:
+            executorch_program.write_to_file(file)
+    else:
+        # Bundled export
+        print("Exporting bundled F0N predictor...")
+        predictors = {}
+        for name, n_tokens in input_name_mappings.items():
+            _, exported_pred = convert_to_executorch_program(inputs_dict[name], transform_and_lower=False)
+            predictors[n_tokens] = exported_pred
+
+        edge_program = to_edge_transform_and_lower(
+            {f"forward_{n_tokens}": ep for n_tokens, ep in predictors.items()},
+            partitioner=[XnnpackPartitioner()],
+        ).to_executorch()
+
+        with open(f"{root_destination}/f0n_predictor.pte", "wb") as file:
+            edge_program.write_to_file(file)
 
     print("Finished!")

@@ -6,6 +6,7 @@ from executorch.exir import to_edge_transform_and_lower
 from huggingface_hub import hf_hub_download
 from torch.nn import Module
 from typing import Literal
+import argparse
 import torch
 
 # ----------------------------
@@ -69,52 +70,52 @@ def remove_weight_norms(decoder):
         torch.nn.utils.parametrize.remove_parametrizations(conv, "weight", leave_parametrized=True)
 
 
-# ----------------------------
-# Decoder - input data loading
-# ----------------------------
+# -------------------------------
+# Decoder - input data definition
+# -------------------------------
 
-# ------------------------------------------------------------------------------------------
-INPUT_MODE: Literal["test", "random-small", "random-medium", "random-big"] = "random-medium"
-# ------------------------------------------------------------------------------------------
+inputs_dict = {
+	"test": (
+		torch.load("original_models/data/text_decoder_input.pt")["asr"],
+		torch.load("original_models/data/text_decoder_input.pt")["F0_pred"],
+		torch.load("original_models/data/text_decoder_input.pt")["N_pred"],
+		torch.load("original_models/data/text_decoder_input.pt")["ref_s"]
+	),
+	"small": (
+		torch.randn(size=(1, 512, 64)),
+		torch.randn(size=(1, 128)),
+		torch.randn(size=(1, 128)),
+		torch.randn(size=(1, 128))
+	),
+	"medium": (
+		torch.randn(size=(1, 512, 164)),
+		torch.randn(size=(1, 328)),
+		torch.randn(size=(1, 328)),
+		torch.randn(size=(1, 128))
+	),
+	"big": (
+		torch.randn(size=(1, 512, 556)),
+		torch.randn(size=(1, 1112)),
+		torch.randn(size=(1, 1112)),
+		torch.randn(size=(1, 128))
+	)
+}
 
-if __name__ == "__main__":
-    if INPUT_MODE == "test":
-        data = torch.load("original_models/data/text_decoder_input.pt")
-        asr = data["asr"]
-        F0_pred = data["F0_pred"]
-        N_pred = data["N_pred"]
-        ref_s = data["ref_s"]
-    elif INPUT_MODE == "random-small":
-        asr = torch.randn(size=(1, 512, 64))
-        F0_pred = torch.randn(size=(1, 128))
-        N_pred = torch.randn(size=(1, 128))
-        ref_s = torch.randn(size=(1, 128))
-    elif INPUT_MODE == "random-medium":
-        asr = torch.randn(size=(1, 512, 164))
-        F0_pred = torch.randn(size=(1, 328))
-        N_pred = torch.randn(size=(1, 328))
-        ref_s = torch.randn(size=(1, 128))
-    elif INPUT_MODE == "random-big":
-        asr = torch.randn(size=(1, 512, 1024))
-        F0_pred = torch.randn(size=(1, 4096))
-        N_pred = torch.randn(size=(1, 4096))
-        ref_s = torch.randn(size=(1, 128))
-    else:
-        raise RuntimeError("Invalid input mode!")
-
-    inputs = (
-        asr,
-        F0_pred,
-        N_pred,
-        ref_s
-    )
+# Keys: input size names
+# Values: equivalent number of input tokens
+input_name_mappings = {
+    "test": "test",
+    "small": "16",
+    "medium": "64",
+    "big": "256"
+}
 
 
 # -------------------------
 # Decoder - export pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
     model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
     decoder = DecoderWrapper(model)
     decoder.eval()
@@ -125,6 +126,9 @@ def convert_to_executorch_program(inputs):
     # Export
     exported_program = torch.export.export(decoder, inputs)
 
+    if not transform_and_lower:
+        return decoder, exported_program
+
     executorch_program = to_edge_transform_and_lower(
         exported_program,
         partitioner = [XnnpackPartitioner()]
@@ -133,15 +137,49 @@ def convert_to_executorch_program(inputs):
     return decoder, executorch_program
 
 if __name__ == "__main__":
-    _, executorch_program = convert_to_executorch_program(inputs)
-    executorch_program = executorch_program.to_executorch()
+    # Parse input arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-size", choices=["test", "small", "medium", "big"], required=False)
+    parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
+    args = parser.parse_args()
 
-    print_delegation_info(executorch_program.exported_program().graph_module)
+    # Input mode selection
+    if args.bundled:
+        input_mode = "random-medium"
+    elif args.input_size is None:
+        raise RuntimeError("--input-size is required when bundled == false")
 
-    # Save exported file
+    bundled = args.bundled
+    input_mode = args.input_size
+
     ROOT_DESTINATION = "exported_models/tmp"
 
-    with open(f"{ROOT_DESTINATION}/text_decoder_{INPUT_MODE}.pte", "wb") as file:
-        file.write(executorch_program.buffer)
+    if not bundled:
+        print(f"Expporting decoder with {input_mode} input...")
+
+        input_alias = input_name_mappings[input_mode]
+        inputs = inputs_dict[input_mode]
+
+        _, executorch_program = convert_to_executorch_program(inputs)
+        executorch_program = executorch_program.to_executorch()
+
+        print_delegation_info(executorch_program.exported_program().graph_module)
+
+        with open(f"{ROOT_DESTINATION}/text_decoder_{input_alias}.pte", "wb") as file:
+            executorch_program.write_to_file(file)
+    else:
+        print(f"Expporting bundled decoder...")
+
+        decoders = {}
+        for input_mode, n_tokens in input_name_mappings.items():
+            _, exported_decoder = convert_to_executorch_program(inputs_dict[input_mode], transform_and_lower=False)
+            decoders[n_tokens] = exported_decoder
+        
+        executorch_program = to_edge_transform_and_lower({
+            f"forward_{n_tokens}": ep for n_tokens, ep in decoders.items()
+        }, partitioner=[XnnpackPartitioner()]).to_executorch()
+
+        with open(f"{ROOT_DESTINATION}/text_decoder.pte", "wb") as file:
+            executorch_program.write_to_file(file)
 
     print("Finished!")
