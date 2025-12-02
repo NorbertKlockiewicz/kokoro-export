@@ -135,7 +135,12 @@ class CustomSTFT(nn.Module):
         # Handle the case where imag_out is 0 and real_out is negative to correct ONNX atan2 to match PyTorch
         # In this case, PyTorch returns pi, ONNX returns -pi
         correction_mask = (imag_out == 0) & (real_out < 0)
-        phase[correction_mask] = torch.pi
+        # phase[correction_mask] = torch.pi   # PROBLEM: not delegated to the backend, huge time loss
+        phase = torch.where(    # FIX?
+            (imag_out == 0) & (real_out < 0),
+            torch.full_like(phase, torch.pi),
+            phase
+        )
         return magnitude, phase
 
 

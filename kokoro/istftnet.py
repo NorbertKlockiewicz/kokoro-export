@@ -150,6 +150,9 @@ class AdaINResBlock1(nn.Module):
             self.convs1, self.convs2, self.adain1, self.adain2, self.alpha1, self.alpha2
         ):
             xt = n1(x, s)
+            # PROBLEM: sin not delegated to the backend
+            # The issue is probably caused by xt (and x) not being traced properly
+            # Actualy the whole forward() method is not delegated
             xt = xt + (1 / a1) * (torch.sin(a1 * xt) ** 2)  # Snake1D
             xt = c1(xt)
             xt = n2(xt, s)
