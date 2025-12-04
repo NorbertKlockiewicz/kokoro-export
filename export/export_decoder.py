@@ -19,8 +19,8 @@ class DecoderWrapper(Module):
         self.decoder = model.decoder
 
     def forward(self, asr: torch.FloatTensor, F0_pred: torch.FloatTensor,
-                N_pred: torch.FloatTensor, ref_s: torch.FloatTensor):
-        return self.decoder(asr, F0_pred, N_pred, ref_s)
+                N_pred: torch.FloatTensor, ref: torch.FloatTensor):
+        return self.decoder(asr, F0_pred, N_pred, ref)
 
 
 # ---------------------------

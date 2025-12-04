@@ -1,5 +1,5 @@
 from .modules import CustomAlbert
-from .temporal_scaling import scale, indices_to_counters
+from .temporal_scaling import scale
 from dataclasses import dataclass
 from executorch.runtime import Runtime
 from huggingface_hub import hf_hub_download
@@ -64,14 +64,18 @@ class KModelPTE(torch.nn.Module):
         self.context_length = self.bert.config.max_position_embeddings
 
         # Use exported .pte models
-        # self.duration_predictor = runtime.load_program("exported_models/duration_predictor_16.pte").load_method("forward")
-        # self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor_16.pte").load_method("forward")
-        # self.text_encoder = runtime.load_program("exported_models/text_encoder_16.pte").load_method("forward")
-        # self.text_decoder = runtime.load_program("exported_models/text_decoder_16.pte").load_method("forward")
-        self.duration_predictor = runtime.load_program("exported_models/duration_predictor_64.pte").load_method("forward")
-        self.f0n_predictor = runtime.load_program("exported_models/f0n_predictor_64.pte").load_method("forward")
-        self.text_encoder = runtime.load_program("exported_models/text_encoder_64.pte").load_method("forward")
-        self.text_decoder = runtime.load_program("exported_models/text_decoder_64.pte").load_method("forward")
+        self.TARGET_TOKENS = 64
+        self.TARGET_LEN = 164
+        method_name = "forward"
+        # method_name = f"forward_{self.TARGET_TOKENS}"
+        self.duration_predictor = runtime.load_program("exported_models/tmp/duration_predictor_64.pte").load_method(method_name)
+        self.f0n_predictor = runtime.load_program("exported_models/tmp/f0n_predictor_64.pte").load_method(method_name)
+        self.text_encoder = runtime.load_program("exported_models/tmp/text_encoder_64.pte").load_method(method_name)
+        self.text_decoder = runtime.load_program("exported_models/tmp/text_decoder_64.pte").load_method(method_name)
+        # self.duration_predictor = runtime.load_program("exported_models/xnnpack/duration_predictor.pte").load_method(method_name)
+        # self.f0n_predictor = runtime.load_program("exported_models/xnnpack/f0n_predictor.pte").load_method(method_name)
+        # self.text_encoder = runtime.load_program("exported_models/xnnpack/text_encoder.pte").load_method(method_name)
+        # self.text_decoder = runtime.load_program("exported_models/xnnpack/text_decoder.pte").load_method(method_name)
 
     @property
     def device(self):
@@ -87,67 +91,57 @@ class KModelPTE(torch.nn.Module):
         self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: float, original_input_length: int
     ) -> tuple[torch.FloatTensor, torch.LongTensor]:
         # To fix the repeated parts of code'
-        input_lengths = torch.tensor(input_ids.shape[-1])
         text_mask = torch.ones((1, input_ids.shape[-1]), dtype=torch.bool)
         text_mask[:, original_input_length:] = 0
 
+        ref = ref_s[:, :128]
+        s = ref_s[:, 128:]
+
         # ------------------------------------------------------------------------------
-        # DurationPredictor (duration_predictor.pte) - returns pred_dur, d, s
+        # DurationPredictor (duration_predictor.pte) - returns pred_dur, d, en
         # ------------------------------------------------------------------------------
-        pred_dur, d, s = self.duration_predictor.execute((input_ids, ref_s, torch.tensor([speed], dtype=torch.float32), text_mask))
+        pred_dur, d = self.duration_predictor.execute((input_ids, text_mask, s, torch.tensor([speed], dtype=torch.float32)))
         # ------------------------------------------------------------------------------
 
+        # NATIVE ------------------------------------------------------------------------
+        pred_dur = scale(pred_dur, self.TARGET_LEN)
         indices = torch.repeat_interleave(
             torch.arange(input_ids.shape[1], device=self.device), pred_dur
         )
-
-        # Adjustment to fixate the indices length
-        # This is a LLM generated shit, replace it with a proper code and algorithm
-        original_len = int(indices.shape[-1])
-        target_len = 164
-
-        indices = scale(indices, target_len)
-        pred_dur = indices_to_counters(indices)
-
-        pred_aln_trg = torch.zeros(
-            (input_ids.shape[1], indices.shape[0]), device=self.device
-        )
-        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
-        pred_aln_trg = pred_aln_trg.unsqueeze(0).to(self.device)
-        # # Force batch size = 1.
-        # pred_aln_trg = pred_aln_trg.to(self.device)
-        en = d.transpose(-1, -2) @ pred_aln_trg
-
-        mask = (en == 0).all(dim=(0, 1))
-        zero_cols = torch.where(mask)[0]
-        if len(zero_cols) > 0:
-            efficient_duration = int(zero_cols[0].item() * 0.9)    # We can cut it off even more for better effect
-        else:
-            efficient_duration = en.shape[-1]
+        # NATIVE ------------------------------------------------------------------------
 
         # ------------------------------------------------------------------------------
         # F0NPredictor (f0n_predictor.pte) - returns F0_pred, N_pred
         # ------------------------------------------------------------------------------
-        F0_pred, N_pred = self.f0n_predictor.execute((en, s))
+        F0_pred, N_pred, en, pred_aln_trg = self.f0n_predictor.execute((indices, d, s))
         # ------------------------------------------------------------------------------
 
+        # NATIVE --------------------------------------------------------------------------------------------------
+        mask = (en == 0).all(dim=(0, 1))
+        zero_cols = torch.where(mask)[0]
+        if len(zero_cols) > 0:
+            efficient_duration = int(zero_cols[0].item() * 0.95)    # We can cut it off even more for better effect
+        else:
+            efficient_duration = en.shape[-1]
+        # NATIVE --------------------------------------------------------------------------------------------------
+
         # ------------------------------------------------------------------------------
-        # TextEncoderWrapper (text_encoder.pte) - returns t_en, takes only input_ids
+        # TextEncoderWrapper (text_encoder.pte) - returns asr
         # ------------------------------------------------------------------------------
-        t_en = self.text_encoder.execute((input_ids, input_lengths, text_mask))[0]
+        asr = self.text_encoder.execute((input_ids, text_mask, pred_aln_trg))[0]
         # ------------------------------------------------------------------------------
 
-        asr = t_en @ pred_aln_trg
-
+        # NATIVE --------------------------------------------------------------------------------------------------
         # Cut the output to avoid anomalies caused by padding
         asr[:, :, efficient_duration:] = 0
         F0_pred[:, 2*efficient_duration:] = 0
         N_pred[:, 2*efficient_duration:] = 0
+        # NATIVE --------------------------------------------------------------------------------------------------
 
         # ------------------------------------------------------------------------------
         # TextDecoderWrapper (text_decoder_16_xxx.pte) - returns audio
         # ------------------------------------------------------------------------------
-        audio = self.text_decoder.execute((asr, F0_pred, N_pred, ref_s[:, :128]))[0]
+        audio = self.text_decoder.execute((asr, F0_pred, N_pred, ref))[0]
         # ------------------------------------------------------------------------------
 
         return audio, pred_dur
@@ -162,20 +156,16 @@ class KModelPTE(torch.nn.Module):
         input_ids = list(
             filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), phonemes))
         )
-        logger.debug(f"phonemes: {phonemes} -> input_ids: {input_ids}")
         assert len(input_ids) + 2 <= self.context_length, (
             len(input_ids) + 2,
             self.context_length,
         )
 
-        print("Original number of tokens:", len(input_ids))
-
         # Cut the number of tokens (as models are being exported with static input)
-        TARGET_TOKENS = 64
-        original_input_length = min(len(input_ids) + 2, TARGET_TOKENS)
-        while len(input_ids) < (TARGET_TOKENS - 2):
+        original_input_length = min(len(input_ids) + 2, self.TARGET_TOKENS)
+        while len(input_ids) < (self.TARGET_TOKENS - 2):
             input_ids.append(0)
-        input_ids = input_ids[:(TARGET_TOKENS - 2)]
+        input_ids = input_ids[:(self.TARGET_TOKENS - 2)]
         input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
 
         ref_s = ref_s.to(self.device)

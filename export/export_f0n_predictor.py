@@ -20,7 +20,14 @@ class F0NPredictorWrapper(Module):
         self.N_blocks = model.predictor.N
         self.N_proj = model.predictor.N_proj
 
-    def forward(self, en: torch.FloatTensor, s: torch.FloatTensor):
+    def forward(self, indices: torch.LongTensor, d: torch.FloatTensor, s: torch.FloatTensor):
+        input_size = d.shape[1]
+
+        pred_aln_trg = torch.zeros((input_size, indices.shape[0]))
+        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
+        pred_aln_trg = pred_aln_trg.unsqueeze(0)
+        en = d.transpose(-1, -2) @ pred_aln_trg
+
         x = en.transpose(-1, -2)
         torch._check_is_size(x.shape[1])
         x, _ = self.shared(x)
@@ -35,7 +42,7 @@ class F0NPredictorWrapper(Module):
             N = block(N, s)
         N = self.N_proj(N)
 
-        return F0.squeeze(1), N.squeeze(1)
+        return F0.squeeze(1), N.squeeze(1), en, pred_aln_trg
 
 
 # ---------------------------------
@@ -67,15 +74,18 @@ inputs_dict = {
         torch.load("original_models/data/f0n_predictor_input.pt")["s"],
     ),
     "small": (
-        torch.randn(size=(1, 640, 64)),
+        torch.randint(0, 2, (64,), dtype=torch.long),
+        torch.randn(size=(1, 16, 640)),
         torch.randn(size=(1, 128)),
     ),
     "medium": (
-        torch.randn(size=(1, 640, 164)),
+        torch.randint(0, 2, (164,), dtype=torch.long),
+        torch.randn(size=(1, 64, 640)),
         torch.randn(size=(1, 128)),
     ),
     "big": (
-        torch.randn(size=(1, 640, 556)),
+        torch.randint(0, 2, (556,), dtype=torch.long),
+        torch.randn(size=(1, 256, 640)),
         torch.randn(size=(1, 128)),
     ),
 }

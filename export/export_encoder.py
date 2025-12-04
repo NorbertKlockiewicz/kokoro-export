@@ -17,9 +17,11 @@ class TextEncoderWrapper(Module):
         self.text_encoder = model.text_encoder
 
     def forward(self, input_ids: torch.LongTensor,
-                      input_lengths: torch.LongTensor,
-                      text_mask: torch.BoolTensor):
-        return self.text_encoder(input_ids, input_lengths, ~text_mask)
+                      text_mask: torch.BoolTensor,
+                      pred_aln_trg: torch.FloatTensor):
+        t_en = self.text_encoder(input_ids, ~text_mask)
+
+        return t_en @ pred_aln_trg
 
 # ---------------------------------
 # Encoder - model adjustments
@@ -44,18 +46,18 @@ inputs_dict = {
     ),
     "small": (
         torch.randint(0, 178, size=(1, 16)),
-        torch.tensor(16),
         torch.ones((1, 16), dtype=torch.bool),
+        torch.randint(0, 2, (1, 16, 64)).float()
     ),
     "medium": (
         torch.randint(0, 178, size=(1, 64)),
-        torch.tensor(64),
         torch.ones((1, 64), dtype=torch.bool),
+        torch.randint(0, 2, (1, 64, 164)).float()
     ),
     "big": (
         torch.randint(0, 178, size=(1, 256)),
-        torch.tensor(256),
         torch.ones((1, 256), dtype=torch.bool),
+        torch.randint(0, 2, (1, 256, 556)).float()
     ),
 }
 

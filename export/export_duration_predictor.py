@@ -1,4 +1,5 @@
 from kokoro import KModel
+from kokoro.temporal_scaling import scale
 from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
 from executorch.devtools.backend_debug import print_delegation_info, get_delegation_info
 from executorch.exir import to_edge_transform_and_lower
@@ -19,19 +20,18 @@ class DurationPredictorWrapper(Module):
         self.text_encoder_module = model.predictor.text_encoder
         self.lstm = model.predictor.lstm
         self.duration_proj = model.predictor.duration_proj
-
-    def forward(self, input_ids: torch.LongTensor, ref_s: torch.FloatTensor, speed: torch.Tensor,
-                      text_mask: torch.BoolTensor):
+    def forward(self, input_ids: torch.LongTensor, text_mask: torch.BoolTensor,
+                      s: torch.FloatTensor, speed: torch.Tensor):
         input_lengths = torch.tensor(input_ids.shape[-1])
         bert_dur = self.bert(input_ids, attention_mask=text_mask.int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
-        s = ref_s[:, 128:]
         d = self.text_encoder_module(d_en, s, input_lengths, ~text_mask)
         x, _ = self.lstm(d)
         duration = self.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
-        return pred_dur, d, s
+
+        return pred_dur, d
 
 
 # --------------------------------------
@@ -55,21 +55,21 @@ inputs_dict = {
     ),
     "small": (
         torch.randint(0, 178, size=(1, 16)),
-        torch.randn(size=(1, 256)),
-        torch.tensor([1.0], dtype=torch.float32),
         torch.ones((1, 16), dtype=torch.bool),
+        torch.randn(size=(1, 128)),
+        torch.tensor([1.0], dtype=torch.float32),
     ),
     "medium": (
         torch.randint(0, 178, size=(1, 64)),
-        torch.randn(size=(1, 256)),
-        torch.tensor([1.0], dtype=torch.float32),
         torch.ones((1, 64), dtype=torch.bool),
+        torch.randn(size=(1, 128)),
+        torch.tensor([1.0], dtype=torch.float32),
     ),
     "big": (
         torch.randint(0, 178, size=(1, 256)),
-        torch.randn(size=(1, 256)),
-        torch.tensor([1.0], dtype=torch.float32),
         torch.ones((1, 256), dtype=torch.bool),
+        torch.randn(size=(1, 128)),
+        torch.tensor([1.0], dtype=torch.float32),
     ),
 }
 
