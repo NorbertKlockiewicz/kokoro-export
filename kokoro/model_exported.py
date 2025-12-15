@@ -64,18 +64,18 @@ class KModelPTE(torch.nn.Module):
         self.context_length = self.bert.config.max_position_embeddings
 
         # Use exported .pte models
-        self.TARGET_TOKENS = 64
-        self.TARGET_LEN = 164
-        method_name = "forward"
-        # method_name = f"forward_{self.TARGET_TOKENS}"
-        self.duration_predictor = runtime.load_program("exported_models/tmp/duration_predictor_64.pte").load_method(method_name)
-        self.f0n_predictor = runtime.load_program("exported_models/tmp/f0n_predictor_64.pte").load_method(method_name)
-        self.text_encoder = runtime.load_program("exported_models/tmp/text_encoder_64.pte").load_method(method_name)
-        self.text_decoder = runtime.load_program("exported_models/tmp/text_decoder_64.pte").load_method(method_name)
-        # self.duration_predictor = runtime.load_program("exported_models/xnnpack/duration_predictor.pte").load_method(method_name)
-        # self.f0n_predictor = runtime.load_program("exported_models/xnnpack/f0n_predictor.pte").load_method(method_name)
-        # self.text_encoder = runtime.load_program("exported_models/xnnpack/text_encoder.pte").load_method(method_name)
-        # self.text_decoder = runtime.load_program("exported_models/xnnpack/text_decoder.pte").load_method(method_name)
+        self.TARGET_TOKENS = 16
+        self.TARGET_LEN = 64
+        # method_name = "forward"
+        method_name = f"forward_{self.TARGET_TOKENS}"
+        # self.duration_predictor = runtime.load_program("exported_models/tmp/duration_predictor_64.pte").load_method(method_name)
+        # self.f0n_predictor = runtime.load_program("exported_models/tmp/f0n_predictor_64.pte").load_method(method_name)
+        # self.text_encoder = runtime.load_program("exported_models/tmp/text_encoder_64.pte").load_method(method_name)
+        # self.text_decoder = runtime.load_program("exported_models/tmp/text_decoder_64.pte").load_method(method_name)
+        self.duration_predictor = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/duration_predictor.pte").load_method(method_name)
+        self.f0n_predictor = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/f0n_predictor.pte").load_method(method_name)
+        self.text_encoder = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/text_encoder.pte").load_method(method_name)
+        self.text_decoder = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/text_decoder.pte").load_method(method_name)
 
     @property
     def device(self):
@@ -131,17 +131,11 @@ class KModelPTE(torch.nn.Module):
         asr = self.text_encoder.execute((input_ids, text_mask, pred_aln_trg))[0]
         # ------------------------------------------------------------------------------
 
-        # NATIVE --------------------------------------------------------------------------------------------------
-        # Cut the output to avoid anomalies caused by padding
-        asr[:, :, efficient_duration:] = 0
-        F0_pred[:, 2*efficient_duration:] = 0
-        N_pred[:, 2*efficient_duration:] = 0
-        # NATIVE --------------------------------------------------------------------------------------------------
-
         # ------------------------------------------------------------------------------
         # TextDecoderWrapper (text_decoder_16_xxx.pte) - returns audio
         # ------------------------------------------------------------------------------
         audio = self.text_decoder.execute((asr, F0_pred, N_pred, ref))[0]
+        audio = audio[:, :, :600*efficient_duration]
         # ------------------------------------------------------------------------------
 
         return audio, pred_dur
@@ -172,6 +166,5 @@ class KModelPTE(torch.nn.Module):
         audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed, original_input_length)
         audio = audio.squeeze().cpu()
         pred_dur = pred_dur.cpu() if pred_dur is not None else None
-        logger.debug(f"pred_dur: {pred_dur}")
         
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
