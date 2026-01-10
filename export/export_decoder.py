@@ -8,6 +8,7 @@ from torch.nn import Module
 from typing import Literal
 import argparse
 import torch
+from torch.export import Dim
 
 # ----------------------------
 # Decoder - exported interface
@@ -81,22 +82,22 @@ inputs_dict = {
 		torch.load("original_models/data/text_decoder_input.pt")["N_pred"],
 		torch.load("original_models/data/text_decoder_input.pt")["ref_s"]
 	),
-	"small": (
-		torch.randn(size=(1, 512, 64)),
-		torch.randn(size=(1, 128)),
-		torch.randn(size=(1, 128)),
+    "inp-32": (
+		torch.randn(size=(1, 512, 92)),
+		torch.randn(size=(1, 184)),
+		torch.randn(size=(1, 184)),
 		torch.randn(size=(1, 128))
 	),
-	"medium": (
+	"inp-64": (
 		torch.randn(size=(1, 512, 164)),
 		torch.randn(size=(1, 328)),
 		torch.randn(size=(1, 328)),
 		torch.randn(size=(1, 128))
 	),
-	"big": (
-		torch.randn(size=(1, 512, 556)),
-		torch.randn(size=(1, 1112)),
-		torch.randn(size=(1, 1112)),
+	"inp-128": (
+		torch.randn(size=(1, 512, 296)),
+		torch.randn(size=(1, 592)),
+		torch.randn(size=(1, 592)),
 		torch.randn(size=(1, 128))
 	)
 }
@@ -105,9 +106,9 @@ inputs_dict = {
 # Values: equivalent number of input tokens
 input_name_mappings = {
     "test": "test",
-    "small": "16",
-    "medium": "64",
-    "big": "256"
+    "inp-32": "32",
+    "inp-64": "64",
+    "inp-128": "128"
 }
 
 
@@ -115,7 +116,7 @@ input_name_mappings = {
 # Decoder - export pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False):
     model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
     decoder = DecoderWrapper(model)
     decoder.eval()
@@ -123,11 +124,31 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
     # Apply deparametrization
     remove_weight_norms(decoder.decoder)
 
+    # Dynamic shapes definition
+    dynamic_shapes = None
+    if dynamic:
+        k = Dim("k", min=32, max=512)
+        k2 = 2 * k                  # F0/N = 2 * asr_time
+
+        dynamic_shapes = (
+            {2: k},   # asr: (1, 512, k)
+            {1: k2},  # F0_pred: (1, 2*k)
+            {1: k2},  # N_pred:   (1, 2*k)
+            None      # ref: (1,128) fixed
+        )
+
     # Export
-    exported_program = torch.export.export(decoder, inputs)
+    exported_program = torch.export.export(decoder, inputs, dynamic_shapes=dynamic_shapes)
 
     if not transform_and_lower:
         return decoder, exported_program
+    
+    print("--- Model Graph Nodes ---")
+    for node in exported_program.graph.nodes:
+        if node.op == "call_function":
+            print(f"Node: {node.name}, Op: {node.target}")
+    print("-------------------------")
+    exported_program.graph_module.graph.print_tabular()
 
     executorch_program = to_edge_transform_and_lower(
         exported_program,
@@ -139,8 +160,9 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
 if __name__ == "__main__":
     # Parse input arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-size", choices=["test", "small", "medium", "big"], required=False)
+    parser.add_argument("--input-size", choices=["test", "inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
+    parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
     args = parser.parse_args()
 
     # Input mode selection
@@ -160,18 +182,22 @@ if __name__ == "__main__":
         input_alias = input_name_mappings[input_mode]
         inputs = inputs_dict[input_mode]
 
-        _, executorch_program = convert_to_executorch_program(inputs)
+        _, executorch_program = convert_to_executorch_program(inputs, dynamic=args.dynamic)
         executorch_program = executorch_program.to_executorch()
 
         print_delegation_info(executorch_program.exported_program().graph_module)
 
-        with open(f"{ROOT_DESTINATION}/text_decoder_{input_alias}.pte", "wb") as file:
+        inp_alias = input_alias if not args.dynamic else "dynamic"
+        with open(f"{ROOT_DESTINATION}/text_decoder_{inp_alias}.pte", "wb") as file:
             executorch_program.write_to_file(file)
     else:
         print(f"Expporting bundled decoder...")
 
         decoders = {}
         for input_mode, n_tokens in input_name_mappings.items():
+            if input_mode == "test":
+                continue
+
             _, exported_decoder = convert_to_executorch_program(inputs_dict[input_mode], transform_and_lower=False)
             decoders[n_tokens] = exported_decoder
         

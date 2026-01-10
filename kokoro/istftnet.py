@@ -226,7 +226,7 @@ class SineGen(nn.Module):
         sine_amp=0.1,
         noise_std=0.003,
         voiced_threshold=0,
-        flag_for_pulse=False,
+        flag_for_pulse=True,    # Custom fix: changed to True
     ):
         super(SineGen, self).__init__()
         self.sine_amp = sine_amp
@@ -412,9 +412,10 @@ class Generator(nn.Module):
             harmonic_num=8,
             voiced_threshod=10,
         )
-        self.f0_upsamp = nn.Upsample(
-            scale_factor=math.prod(upsample_rates) * gen_istft_hop_size
-        )
+        # self.f0_upsamp = nn.Upsample(
+        #     scale_factor=math.prod(upsample_rates) * gen_istft_hop_size
+        # )
+        self.f0_upsamp_factor = math.prod(upsample_rates) * gen_istft_hop_size
         self.noise_convs = nn.ModuleList()
         self.noise_res = nn.ModuleList()
         self.ups = nn.ModuleList()
@@ -478,8 +479,15 @@ class Generator(nn.Module):
 
     def forward(self, x, s, f0):
         with torch.no_grad():
-            f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
-            har_source, noi_source, uv = self.m_source(f0)
+            # f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
+            # har_source, noi_source, uv = self.m_source(f0)
+
+            # Custom fix
+            out_len = f0.shape[1] * self.f0_upsamp_factor
+            f0_upsampled = F.interpolate(f0[:, None], size=out_len, mode="nearest")
+            f0_upsampled = f0_upsampled.transpose(1, 2)  # bs,n,t
+            har_source, noi_source, uv = self.m_source(f0_upsampled)
+            
             har_source = har_source.transpose(1, 2).squeeze(1)
             har_spec, har_phase = self.stft.transform(har_source)
             har = torch.cat([har_spec, har_phase], dim=1)
@@ -514,7 +522,10 @@ class UpSample1d(nn.Module):
         if self.layer_type == "none":
             return x
         else:
-            return F.interpolate(x, scale_factor=2, mode="nearest")
+            # return F.interpolate(x, scale_factor=2, mode="nearest")
+            output_size = list(x.shape)
+            output_size[-1] *= 2
+            return F.interpolate(x, size=output_size[-1], mode="nearest")
 
 
 class AdainResBlk1d(nn.Module):
@@ -560,7 +571,7 @@ class AdainResBlk1d(nn.Module):
     def _shortcut(self, x):
         x = self.upsample(x)
         if self.learned_sc:
-            x = self.conv1x1(x)
+            x = self.conv1x1(x) # conv_18 ?
         return x
 
     def _residual(self, x, s):
