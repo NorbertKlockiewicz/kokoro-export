@@ -6,6 +6,7 @@ from torch.nn import Module
 from typing import Literal
 import argparse
 import torch
+from torch.export import Dim
 
 # ----------------------------------
 # F0N Predictor - exported interface
@@ -23,8 +24,8 @@ class F0NPredictorWrapper(Module):
     def forward(self, indices: torch.LongTensor, d: torch.FloatTensor, s: torch.FloatTensor):
         input_size = d.shape[1]
 
-        pred_aln_trg = torch.zeros((input_size, indices.shape[0]))
-        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1
+        pred_aln_trg = torch.zeros((input_size, indices.shape[0]), dtype=torch.float32)
+        pred_aln_trg[indices, torch.arange(indices.shape[0])] = 1.0
         pred_aln_trg = pred_aln_trg.unsqueeze(0)
         en = d.transpose(-1, -2) @ pred_aln_trg
 
@@ -69,39 +70,34 @@ def remove_weight_norms(f0n_predictor: F0NPredictorWrapper):
 # --------------------------------
 
 inputs_dict = {
-    "test": (
-        torch.load("original_models/data/f0n_predictor_input.pt")["en"],
-        torch.load("original_models/data/f0n_predictor_input.pt")["s"],
-    ),
-    "small": (
-        torch.randint(0, 2, (64,), dtype=torch.long),
-        torch.randn(size=(1, 16, 640)),
+    "inp-32": (
+        torch.randint(0, 2, (92,), dtype=torch.long),
+        torch.randn(size=(1, 32, 640)),
         torch.randn(size=(1, 128)),
     ),
-    "medium": (
+    "inp-64": (
         torch.randint(0, 2, (164,), dtype=torch.long),
         torch.randn(size=(1, 64, 640)),
         torch.randn(size=(1, 128)),
     ),
-    "big": (
-        torch.randint(0, 2, (556,), dtype=torch.long),
-        torch.randn(size=(1, 256, 640)),
+    "inp-128": (
+        torch.randint(0, 2, (296,), dtype=torch.long),
+        torch.randn(size=(1, 128, 640)),
         torch.randn(size=(1, 128)),
     ),
 }
 
 input_name_mappings = {
-    "test": "test",
-    "small": "16",
-    "medium": "64",
-    "big": "256",
+    "inp-32": "32",
+    "inp-64": "64",
+    "inp-128": "128"
 }
 
 # -------------------------
 # F0N Predictor - pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False):
     model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
     f0n_predictor = F0NPredictorWrapper(model)
     f0n_predictor.eval()
@@ -109,8 +105,20 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
     # Apply deparametrization
     remove_weight_norms(f0n_predictor)
 
+    # Dynamic shapes definition
+    dynamic_shapes = None
+    if dynamic:
+        t = Dim("t", min=16, max=128)   # Tokens (number)
+        d = Dim("d", min=32, max=296)   # Duration
+
+        dynamic_shapes = (
+            {0: d},   # indices: (d,)
+            {1: t},   # d: (1, t, 640)
+            None,  # s (voice half-array, static)
+        )
+
     # Export
-    exported_program = torch.export.export(f0n_predictor, inputs)
+    exported_program = torch.export.export(f0n_predictor, inputs, dynamic_shapes=dynamic_shapes)
 
     if not transform_and_lower:
         return f0n_predictor, exported_program
@@ -129,8 +137,9 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
 if __name__ == "__main__":
     # Arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-size", choices=["test", "small", "medium", "big"], required=False)
+    parser.add_argument("--input-size", choices=["inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
+    parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
     args = parser.parse_args()
 
     # Mode selection
@@ -148,12 +157,13 @@ if __name__ == "__main__":
         input_alias = input_name_mappings[input_mode]
         inputs = inputs_dict[input_mode]
 
-        _, edge_program = convert_to_executorch_program(inputs)
+        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic)
         executorch_program = edge_program.to_executorch()
 
         print_delegation_info(executorch_program.exported_program().graph_module)
 
-        with open(f"{root_destination}/f0n_predictor_{input_alias}.pte", "wb") as file:
+        inp_alias = input_alias if not args.dynamic else "dynamic"
+        with open(f"{root_destination}/f0n_predictor_{inp_alias}.pte", "wb") as file:
             executorch_program.write_to_file(file)
     else:
         # Bundled export

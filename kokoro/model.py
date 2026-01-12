@@ -2,7 +2,6 @@ from .istftnet import Decoder
 from .modules import CustomAlbert, ProsodyPredictor, TextEncoder
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
-from loguru import logger
 from transformers import AlbertConfig
 from typing import Dict, Optional, Union
 import json
@@ -45,11 +44,9 @@ class KModel(torch.nn.Module):
         self.repo_id = repo_id
         if not isinstance(config, dict):
             if not config:
-                logger.debug("No config provided, downloading from HF")
                 config = hf_hub_download(repo_id=repo_id, filename="config.json")
             with open(config, "r", encoding="utf-8") as r:
                 config = json.load(r)
-                logger.debug(f"Loaded config: {config}")
         self.vocab = config["vocab"]
         self.bert = CustomAlbert(
             AlbertConfig(vocab_size=config["n_token"], **config["plbert"])
@@ -89,7 +86,6 @@ class KModel(torch.nn.Module):
             try:
                 getattr(self, key).load_state_dict(state_dict)
             except:
-                logger.debug(f"Did not load {key} from state_dict")
                 state_dict = {k[7:]: v for k, v in state_dict.items()}
                 getattr(self, key).load_state_dict(state_dict, strict=False)
 
@@ -133,7 +129,7 @@ class KModel(torch.nn.Module):
         indices = torch.repeat_interleave(
             torch.arange(input_ids.shape[1], device=self.device), pred_dur
         )
-        return len(indices)
+
         torch._check(indices.shape[0] > 0)
         torch._check_is_size(indices.shape[0])
         pred_aln_trg = torch.zeros(
@@ -154,7 +150,7 @@ class KModel(torch.nn.Module):
         # ------------------------------------------------------------------------------
         # TextEncoderWrapper (text_encoder.pte) - returns t_en, takes only input_ids
         # ------------------------------------------------------------------------------
-        t_en = self.text_encoder(input_ids, input_lengths, ~text_mask)
+        t_en = self.text_encoder(input_ids, ~text_mask)
         # ------------------------------------------------------------------------------
 
         asr = t_en @ pred_aln_trg
@@ -178,7 +174,6 @@ class KModel(torch.nn.Module):
         input_ids = list(
             filter(lambda i: i is not None, map(lambda p: self.vocab.get(p), phonemes))
         )
-        logger.debug(f"phonemes: {phonemes} -> input_ids: {input_ids}")
         assert len(input_ids) + 2 <= self.context_length, (
             len(input_ids) + 2,
             self.context_length,
@@ -193,14 +188,11 @@ class KModel(torch.nn.Module):
 
         ref_s = ref_s.to(self.device)
 
-        return self.forward_with_tokens(input_ids, ref_s, speed)
-
-        # audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
-        # audio = audio.squeeze().cpu()
-        # pred_dur = pred_dur.cpu() if pred_dur is not None else None
-        # logger.debug(f"pred_dur: {pred_dur}")
+        audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed)
+        audio = audio.squeeze().cpu()
+        pred_dur = pred_dur.cpu() if pred_dur is not None else None
         
-        # return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
+        return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
 
 class KModelForONNX(torch.nn.Module):

@@ -6,6 +6,7 @@ from torch.nn import Module
 from typing import Literal
 import argparse
 import torch
+from torch.export import Dim
 
 # ---------------------------
 # Encoder - exported interface
@@ -39,41 +40,35 @@ def remove_weight_norms(encoder: TextEncoderWrapper):
 
 # Predefined inputs for different sizes
 inputs_dict = {
-    "test": (
-        torch.load("original_models/data/text_encoder_input.pt")["input_ids"],
-        torch.load("original_models/data/text_encoder_input.pt")["input_lengths"],
-        torch.load("original_models/data/text_encoder_input.pt")["text_mask"],
+    "inp-32": (
+        torch.randint(0, 178, size=(1, 32)),
+        torch.ones((1, 32), dtype=torch.bool),
+        torch.randint(0, 2, (1, 32, 92)).float()
     ),
-    "small": (
-        torch.randint(0, 178, size=(1, 16)),
-        torch.ones((1, 16), dtype=torch.bool),
-        torch.randint(0, 2, (1, 16, 64)).float()
-    ),
-    "medium": (
+    "inp-64": (
         torch.randint(0, 178, size=(1, 64)),
         torch.ones((1, 64), dtype=torch.bool),
         torch.randint(0, 2, (1, 64, 164)).float()
     ),
-    "big": (
-        torch.randint(0, 178, size=(1, 256)),
-        torch.ones((1, 256), dtype=torch.bool),
-        torch.randint(0, 2, (1, 256, 556)).float()
+    "inp-128": (
+        torch.randint(0, 178, size=(1, 128)),
+        torch.ones((1, 128), dtype=torch.bool),
+        torch.randint(0, 2, (1, 128, 296)).float()
     ),
 }
 
 # Map input names to token counts for filenames
 input_name_mappings = {
-    "test": "test",
-    "small": "16",
-    "medium": "64",
-    "big": "256",
+    "inp-32": "32",
+    "inp-64": "64",
+    "inp-128": "128",
 }
 
 # -------------------------
 # Encoder - export pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False):
     # Model setup
     model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
     encoder = TextEncoderWrapper(model)
@@ -82,8 +77,20 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
     # Deparametrize for XNNPACK delegation
     remove_weight_norms(encoder)
 
+    # Dynamic shapes definition
+    dynamic_shapes = None
+    if dynamic:
+        t = Dim("t", min=16, max=128)   # Tokens (number)
+        d = Dim("d", min=32, max=296)   # Duration
+
+        dynamic_shapes = (
+            {1: t},         # input_ids: (1, t)
+            {1: t},         # text_mask: (1, t)
+            {1: t, 2: d},   # pred_aln_trg:   (1, t, d)
+        )
+
     # Export to ExportedProgram
-    exported_program = torch.export.export(encoder, inputs)
+    exported_program = torch.export.draft_export(encoder, inputs, dynamic_shapes=dynamic_shapes)
 
     # Optionally lower to edge and partition
     if not transform_and_lower:
@@ -102,18 +109,19 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True):
 if __name__ == "__main__":
     # Args: input size and bundled mode
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-size", choices=["test", "small", "medium", "big"], required=False)
+    parser.add_argument("--input-size", choices=["inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
+    parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
     args = parser.parse_args()
 
     # Mode selection
     if args.bundled:
-        input_mode = "medium"
+        input_mode = "inp-64"
     elif args.input_size is None:
         raise RuntimeError("--input-size is required when bundled == false")
 
     bundled = args.bundled
-    input_mode = args.input_size if not bundled else "medium"
+    input_mode = args.input_size if not bundled else "inp-64"
 
     root_destination = "exported_models/tmp"
 
@@ -124,17 +132,18 @@ if __name__ == "__main__":
         inputs = inputs_dict[input_mode]
 
         # Ensure BOS/EOS for random inputs
-        if input_mode in ["small", "medium", "big"]:
+        if input_mode in ["inp-32", "inp-64", "inp-128"]:
             input_ids = inputs[0]
             input_ids[0][0] = 0
             input_ids[0][-1] = 0
 
-        _, edge_program = convert_to_executorch_program(inputs)
+        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic)
         executorch_program = edge_program.to_executorch()
 
         print_delegation_info(executorch_program.exported_program().graph_module)
 
-        with open(f"{root_destination}/text_encoder_{input_alias}.pte", "wb") as file:
+        inp_alias = input_alias if not args.dynamic else "dynamic"
+        with open(f"{root_destination}/text_encoder_{inp_alias}.pte", "wb") as file:
             executorch_program.write_to_file(file)
     else:
         # Bundled export: multiple entrypoints forward_{n_tokens}
@@ -142,10 +151,9 @@ if __name__ == "__main__":
         encoders = {}
         for name, n_tokens in input_name_mappings.items():
             inputs = inputs_dict[name]
-            if name in ["small", "medium", "big"]:
-                input_ids = inputs[0]
-                input_ids[0][0] = 0
-                input_ids[0][-1] = 0
+            input_ids = inputs[0]
+            input_ids[0][0] = 0
+            input_ids[0][-1] = 0
             _, exported_enc = convert_to_executorch_program(inputs, transform_and_lower=False)
             encoders[n_tokens] = exported_enc
 

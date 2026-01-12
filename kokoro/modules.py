@@ -162,7 +162,7 @@ class DurationEncoder(nn.Module):
                 # x = nn.utils.rnn.pack_padded_sequence(
                 #     x, lengths, batch_first=True, enforce_sorted=False)
                 # block.flatten_parameters()
-                x, _ = block(x)
+                x, _ = block(x) # This seems to be a problem?
                 # x, _ = nn.utils.rnn.pad_packed_sequence(
                 #     x, batch_first=True)
                 x = F.dropout(x, p=self.dropout, training=False)

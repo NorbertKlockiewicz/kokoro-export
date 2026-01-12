@@ -76,12 +76,6 @@ def remove_weight_norms(decoder):
 # -------------------------------
 
 inputs_dict = {
-	"test": (
-		torch.load("original_models/data/text_decoder_input.pt")["asr"],
-		torch.load("original_models/data/text_decoder_input.pt")["F0_pred"],
-		torch.load("original_models/data/text_decoder_input.pt")["N_pred"],
-		torch.load("original_models/data/text_decoder_input.pt")["ref_s"]
-	),
     "inp-32": (
 		torch.randn(size=(1, 512, 92)),
 		torch.randn(size=(1, 184)),
@@ -105,7 +99,6 @@ inputs_dict = {
 # Keys: input size names
 # Values: equivalent number of input tokens
 input_name_mappings = {
-    "test": "test",
     "inp-32": "32",
     "inp-64": "64",
     "inp-128": "128"
@@ -127,7 +120,7 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
     # Dynamic shapes definition
     dynamic_shapes = None
     if dynamic:
-        k = Dim("k", min=32, max=512)
+        k = Dim("k", min=32, max=296)
         k2 = 2 * k                  # F0/N = 2 * asr_time
 
         dynamic_shapes = (
@@ -160,7 +153,7 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
 if __name__ == "__main__":
     # Parse input arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-size", choices=["test", "inp-32", "inp-64", "inp-128"], required=False)
+    parser.add_argument("--input-size", choices=["inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
     parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
     args = parser.parse_args()
@@ -195,9 +188,6 @@ if __name__ == "__main__":
 
         decoders = {}
         for input_mode, n_tokens in input_name_mappings.items():
-            if input_mode == "test":
-                continue
-
             _, exported_decoder = convert_to_executorch_program(inputs_dict[input_mode], transform_and_lower=False)
             decoders[n_tokens] = exported_decoder
         

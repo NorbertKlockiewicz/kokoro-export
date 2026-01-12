@@ -25,6 +25,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.locks
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -128,6 +129,7 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+.github
 .env
 .venv
 env/
@@ -172,11 +174,9 @@ cython_debug/
 
 # Model files
 output
-original_models/*.pt
-original_models/*.pth
-original_models/*.pte
+original_models
 !original_models/.gitkeep
-exported_models/*.pte
+exported_models/**/*.pte
 exported_models/tmp/*.pte
 !exported_models/.gitkeep
 
@@ -187,3 +187,5 @@ profiling/results/**
 
 # Other artifacts
 *.DS_Store
+.github
+tmp

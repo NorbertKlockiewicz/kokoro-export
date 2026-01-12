@@ -1,11 +1,18 @@
-import spaces
 from kokoro import KModel
 from kokoro.model_exported import KModelPTE
 from kokoro.pipeline import KPipeline
 import gradio as gr
-import os
 import random
 import torch
+
+# Disable all logs
+import logging
+logging.disable(logging.CRITICAL)
+try:
+    from loguru import logger
+    logger.disable("")
+except ImportError:
+    pass
 
 CUDA_AVAILABLE = torch.cuda.is_available()
 models = {gpu: KModelPTE().to('cuda' if gpu else 'cpu').eval() for gpu in [False] + ([True] if CUDA_AVAILABLE else [])}
@@ -13,13 +20,13 @@ pipelines = {lang_code: KPipeline(lang_code=lang_code, model=False) for lang_cod
 pipelines['a'].g2p.lexicon.golds['kokoro'] = 'kˈOkəɹO'
 pipelines['b'].g2p.lexicon.golds['kokoro'] = 'kˈQkəɹQ'
 
-@spaces.GPU(duration=30)
 def forward_gpu(ps, ref_s, speed):
     return models[True](ps, ref_s, speed)
 
 def generate_first(text, voice='af_heart', speed=1, use_gpu=CUDA_AVAILABLE):
     pipeline = pipelines[voice[0]]
     pack = pipeline.load_voice(voice)
+    print(pack.shape)
     use_gpu = use_gpu and CUDA_AVAILABLE
     for _, ps, _ in pipeline(text, voice, speed):
         ref_s = pack[len(ps)-1]
@@ -117,7 +124,10 @@ CHOICES = {
 '🇬🇧 🚹 Daniel': 'bm_daniel',
 }
 for v in CHOICES.values():
-    pipelines[v[0]].load_voice(v)
+    voice_tensor = pipelines[v[0]].load_voice(v)
+    # file_path = f"exported_models/voices/{v}.bin"
+    # with open(file_path, "wb") as f:
+    #     f.write(voice_tensor.cpu().numpy().astype("float32").tobytes())
 
 TOKEN_NOTE = '''
 💡 Customize pronunciation with Markdown link syntax and /slashes/ like `[Kokoro](/kˈOkəɹO/)`
@@ -181,4 +191,4 @@ with gr.Blocks() as app:
     predict_btn.click(fn=predict, inputs=[text, voice, speed], outputs=[out_audio])
 
 if __name__ == '__main__':
-    app.queue(api_open=API_OPEN).launch(server_name="0.0.0.0", server_port=40001, show_api=API_OPEN)
+    app.queue(api_open=API_OPEN).launch(server_name="0.0.0.0", server_port=40002, show_api=API_OPEN)

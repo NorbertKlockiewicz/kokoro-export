@@ -3,8 +3,7 @@ from .temporal_scaling import scale
 from dataclasses import dataclass
 from executorch.runtime import Runtime
 from huggingface_hub import hf_hub_download
-from loguru import logger
-from transformers import AlbertConfig
+from .postprocessing import find_voice_bound
 from typing import Dict, Optional, Union
 import json
 import torch
@@ -14,25 +13,6 @@ runtime = Runtime.get()
 
 
 class KModelPTE(torch.nn.Module):
-    """
-    KModel is a torch.nn.Module with 2 main responsibilities:
-    1. Init weights, downloading config.json + model.pth from HF if needed
-    2. forward(phonemes: str, ref_s: FloatTensor) -> (audio: FloatTensor)
-
-    You likely only need one KModel instance, and it can be reused across
-    multiple KPipelines to avoid redundant memory allocation.
-
-    Unlike KPipeline, KModel is language-blind.
-
-    KModel stores self.vocab and thus knows how to map phonemes -> input_ids,
-    so there is no need to repeatedly download config.json outside of KModel.
-    """
-
-    MODEL_NAMES = {
-        "hexgrad/Kokoro-82M": "kokoro-v1_0.pth",
-        "hexgrad/Kokoro-82M-v1.1-zh": "kokoro-v1_1-zh.pth",
-    }
-
     def __init__(
         self,
         repo_id: Optional[str] = None,
@@ -49,37 +29,29 @@ class KModelPTE(torch.nn.Module):
         self.repo_id = repo_id
         if not isinstance(config, dict):
             if not config:
-                logger.debug("No config provided, downloading from HF")
+                # logger.debug("No config provided, downloading from HF")
                 config = hf_hub_download(repo_id=repo_id, filename="config.json")
             with open(config, "r", encoding="utf-8") as r:
                 config = json.load(r)
-                logger.debug(f"Loaded config: {config}")
+                # logger.debug(f"Loaded config: {config}")
         self.vocab = config["vocab"]
-        self.bert = CustomAlbert(
-            AlbertConfig(vocab_size=config["n_token"], **config["plbert"])
-        )
-        self.bert_encoder = torch.nn.Linear(
-            self.bert.config.hidden_size, config["hidden_dim"]
-        )
-        self.context_length = self.bert.config.max_position_embeddings
+
+        self.context_length = 510
 
         # Use exported .pte models
-        self.TARGET_TOKENS = 16
-        self.TARGET_LEN = 64
+        self.TARGET_TOKENS = 128
+        self.TARGET_LEN = 296
         # method_name = "forward"
         method_name = f"forward_{self.TARGET_TOKENS}"
         # self.duration_predictor = runtime.load_program("exported_models/tmp/duration_predictor_64.pte").load_method(method_name)
         # self.f0n_predictor = runtime.load_program("exported_models/tmp/f0n_predictor_64.pte").load_method(method_name)
         # self.text_encoder = runtime.load_program("exported_models/tmp/text_encoder_64.pte").load_method(method_name)
         # self.text_decoder = runtime.load_program("exported_models/tmp/text_decoder_64.pte").load_method(method_name)
-        self.duration_predictor = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/duration_predictor.pte").load_method(method_name)
-        self.f0n_predictor = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/f0n_predictor.pte").load_method(method_name)
-        self.text_encoder = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/text_encoder.pte").load_method(method_name)
-        self.text_decoder = runtime.load_program("exported_models/react-native-executorch-kokoro/xnnpack/text_decoder.pte").load_method(method_name)
-
-    @property
-    def device(self):
-        return self.bert.device
+        self.duration_predictor = runtime.load_program("exported_models/xnnpack-newsizes/duration_predictor.pte").load_method(method_name)
+        self.f0n_predictor = runtime.load_program("exported_models/xnnpack-newsizes/f0n_predictor.pte").load_method(method_name)
+        self.text_encoder = runtime.load_program("exported_models/xnnpack-newsizes/text_encoder.pte").load_method(method_name)
+        # self.text_decoder = runtime.load_program("exported_models/xnnpack-newsizes/text_decoder.pte").load_method(method_name)
+        self.text_decoder = runtime.load_program("exported_models/dynamic-shapes/text_decoder.pte").load_method("forward")
 
     @dataclass
     class Output:
@@ -106,23 +78,24 @@ class KModelPTE(torch.nn.Module):
         # NATIVE ------------------------------------------------------------------------
         pred_dur = scale(pred_dur, self.TARGET_LEN)
         indices = torch.repeat_interleave(
-            torch.arange(input_ids.shape[1], device=self.device), pred_dur
+            torch.arange(input_ids.shape[1]), pred_dur
         )
         # NATIVE ------------------------------------------------------------------------
 
         # ------------------------------------------------------------------------------
         # F0NPredictor (f0n_predictor.pte) - returns F0_pred, N_pred
         # ------------------------------------------------------------------------------
+        # en = (1, 640, 16) x (1, 16, 64)
         F0_pred, N_pred, en, pred_aln_trg = self.f0n_predictor.execute((indices, d, s))
         # ------------------------------------------------------------------------------
 
         # NATIVE --------------------------------------------------------------------------------------------------
-        mask = (en == 0).all(dim=(0, 1))
-        zero_cols = torch.where(mask)[0]
-        if len(zero_cols) > 0:
-            efficient_duration = int(zero_cols[0].item() * 0.95)    # We can cut it off even more for better effect
-        else:
-            efficient_duration = en.shape[-1]
+        first_index = None
+        for i in range(indices.shape[0]):
+            if indices[i].item() == original_input_length:
+                first_index = i
+        efficient_duration = first_index if first_index is not None else self.TARGET_LEN
+        efficient_duration = int(efficient_duration * 0.95)
         # NATIVE --------------------------------------------------------------------------------------------------
 
         # ------------------------------------------------------------------------------
@@ -160,11 +133,14 @@ class KModelPTE(torch.nn.Module):
         while len(input_ids) < (self.TARGET_TOKENS - 2):
             input_ids.append(0)
         input_ids = input_ids[:(self.TARGET_TOKENS - 2)]
-        input_ids = torch.LongTensor([[0, *input_ids, 0]]).to(self.device)
+        input_ids = torch.LongTensor([[0, *input_ids, 0]])
 
-        ref_s = ref_s.to(self.device)
         audio, pred_dur = self.forward_with_tokens(input_ids, ref_s, speed, original_input_length)
         audio = audio.squeeze().cpu()
         pred_dur = pred_dur.cpu() if pred_dur is not None else None
         
+        voice_beg = find_voice_bound(audio, from_end=False)
+        voice_end = find_voice_bound(audio, from_end=True)
+
+        audio = audio[voice_beg:voice_end]
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
