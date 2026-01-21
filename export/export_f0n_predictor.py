@@ -13,13 +13,15 @@ from torch.export import Dim
 # ----------------------------------
 
 class F0NPredictorWrapper(Module):
-    def __init__(self, model: KModel):
+    def __init__(self, model: KModel, duration_padding: int | None = None):
         super().__init__()
         self.shared = model.predictor.shared
         self.F0_blocks = model.predictor.F0
         self.F0_proj = model.predictor.F0_proj
         self.N_blocks = model.predictor.N
         self.N_proj = model.predictor.N_proj
+
+        self.lstm_dur_padding = duration_padding
 
     def forward(self, indices: torch.LongTensor, d: torch.FloatTensor, s: torch.FloatTensor):
         input_size = d.shape[1]
@@ -31,7 +33,20 @@ class F0NPredictorWrapper(Module):
 
         x = en.transpose(-1, -2)
         torch._check_is_size(x.shape[1])
+
+        # Padd to the maximum duration
+        if self.lstm_dur_padding is not None:
+            original_seq_len = x.shape[1]
+            torch._check_is_size(original_seq_len)
+            pad_amount = self.lstm_dur_padding - original_seq_len
+            x = torch.nn.functional.pad(x, (0, 0, 0, pad_amount))
+
+        # LSTM inference
         x, _ = self.shared(x)
+
+        # Return back to the original shape
+        if self.lstm_dur_padding is not None:
+            x = x[:, :original_seq_len, :]
 
         F0 = x.transpose(-1, -2)
         for block in self.F0_blocks:
@@ -97,9 +112,10 @@ input_name_mappings = {
 # F0N Predictor - pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False):
-    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
-    f0n_predictor = F0NPredictorWrapper(model)
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False,
+                                  max_tokens: int | None = None, max_duration: int | None = None):
+    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True, lstm_padding=max_tokens)
+    f0n_predictor = F0NPredictorWrapper(model, duration_padding=max_duration)
     f0n_predictor.eval()
 
     # Apply deparametrization
@@ -108,8 +124,8 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
     # Dynamic shapes definition
     dynamic_shapes = None
     if dynamic:
-        t = Dim("t", min=16, max=128)   # Tokens (number)
-        d = Dim("d", min=32, max=296)   # Duration
+        t = Dim("t", min=16, max=max_tokens)   # Tokens (number)
+        d = Dim("d", min=32, max=max_duration)   # Duration
 
         dynamic_shapes = (
             {0: d},   # indices: (d,)
@@ -140,13 +156,20 @@ if __name__ == "__main__":
     parser.add_argument("--input-size", choices=["inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
     parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
+    parser.add_argument("--max-tokens", type=int, required=False, help="Maximum number of tokens (used only if --dynamic is set)")
+    parser.add_argument("--max-duration", type=int, required=False, help="Maximum duration (used only if --dynamic is set)")
     args = parser.parse_args()
 
     # Mode selection
     if args.bundled is False and args.input_size is None:
         raise RuntimeError("--input-size is required when bundled == false")
+    
+    if args.dynamic and (args.max_duration is None or args.max_tokens is None):
+        raise RuntimeError("--max_tokens and --max_duration required when dynamic == true")
 
     bundled = args.bundled
+    max_tokens = args.max_tokens
+    max_duration = args.max_duration
     input_mode = args.input_size if not bundled else "medium"
 
     root_destination = "exported_models/tmp"
@@ -157,7 +180,7 @@ if __name__ == "__main__":
         input_alias = input_name_mappings[input_mode]
         inputs = inputs_dict[input_mode]
 
-        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic)
+        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic, max_tokens=max_tokens, max_duration=max_duration)
         executorch_program = edge_program.to_executorch()
 
         print_delegation_info(executorch_program.exported_program().graph_module)
@@ -170,7 +193,7 @@ if __name__ == "__main__":
         print("Exporting bundled F0N predictor...")
         predictors = {}
         for name, n_tokens in input_name_mappings.items():
-            _, exported_pred = convert_to_executorch_program(inputs_dict[name], transform_and_lower=False)
+            _, exported_pred = convert_to_executorch_program(inputs_dict[name], transform_and_lower=False, dynamic=args.dynamic, max_tokens=max_tokens, max_duration=max_duration)
             predictors[n_tokens] = exported_pred
 
         edge_program = to_edge_transform_and_lower(

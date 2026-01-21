@@ -29,9 +29,10 @@ class CustomInstanceNorm1d(nn.Module):
             self.bias = nn.Parameter(torch.zeros(num_features))
 
     def forward(self, x):
-        mean = x.mean(dim=[2], keepdim=True)
-        var = x.var(dim=[2], unbiased=False, keepdim=True)
-        x_norm = (x - mean) / torch.sqrt(var + self.eps)
+        mean = torch.mean(x, dim=[2], keepdim=True)
+        var = torch.var(x, dim=[2], unbiased=False, keepdim=True)
+
+        x_norm = (x - mean) * torch.rsqrt(var + self.eps)   # Use rsqrt to replace 2 operations with 1
         if self.affine:
             x_norm = self.weight.view(1, -1, 1) * x_norm + self.bias.view(1, -1, 1)
         return x_norm
@@ -226,7 +227,7 @@ class SineGen(nn.Module):
         sine_amp=0.1,
         noise_std=0.003,
         voiced_threshold=0,
-        flag_for_pulse=True,    # Custom fix: changed to True
+        flag_for_pulse=True,    # --- AFTER FIX --- : changed to True
     ):
         super(SineGen, self).__init__()
         self.sine_amp = sine_amp
@@ -305,9 +306,8 @@ class SineGen(nn.Module):
         output uv: tensor(batchsize=1, length, 1)
         """
         # fundamental component
-        fn = torch.multiply(
-            f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device)
-        )
+        harmonics = torch.arange(1, self.harmonic_num + 2, device=f0.device).view(1, 1, -1)
+        fn = f0 * harmonics
         # generate sine waveforms
         sine_waves = self._f02sine(fn) * self.sine_amp
         # generate uv signal
@@ -412,10 +412,17 @@ class Generator(nn.Module):
             harmonic_num=8,
             voiced_threshod=10,
         )
+
+        # --- BEFORE FIX ---
         # self.f0_upsamp = nn.Upsample(
         #     scale_factor=math.prod(upsample_rates) * gen_istft_hop_size
         # )
+        # ------------------
+
+        # --- AFTER FIX ---
         self.f0_upsamp_factor = math.prod(upsample_rates) * gen_istft_hop_size
+        # -----------------
+        
         self.noise_convs = nn.ModuleList()
         self.noise_res = nn.ModuleList()
         self.ups = nn.ModuleList()
@@ -479,20 +486,23 @@ class Generator(nn.Module):
 
     def forward(self, x, s, f0):
         with torch.no_grad():
+            # --- BEFORE FIX ---
             # f0 = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
             # har_source, noi_source, uv = self.m_source(f0)
+            # ------------------
 
-            # Custom fix
+            # --- AFTER FIX ---
             out_len = f0.shape[1] * self.f0_upsamp_factor
             f0_upsampled = F.interpolate(f0[:, None], size=out_len, mode="nearest")
             f0_upsampled = f0_upsampled.transpose(1, 2)  # bs,n,t
             har_source, noi_source, uv = self.m_source(f0_upsampled)
+            # -----------------
             
             har_source = har_source.transpose(1, 2).squeeze(1)
             har_spec, har_phase = self.stft.transform(har_source)
             har = torch.cat([har_spec, har_phase], dim=1)
         for i in range(self.num_upsamples):
-            x = F.leaky_relu(x, negative_slope=0.1)
+            x = F.leaky_relu(x, negative_slope=0.1, inplace=True)   # modification: inplace=True for speed-up
             x_source = self.noise_convs[i](har)     # NOTE: Differs slightly in exported model compared to the original one
             x_source = self.noise_res[i](x_source, s)
             x = self.ups[i](x)
@@ -506,7 +516,7 @@ class Generator(nn.Module):
                 else:
                     xs += self.resblocks[i * self.num_kernels + j](x, s)
             x = xs / self.num_kernels
-        x = F.leaky_relu(x)
+        x = F.leaky_relu(x, inplace=True) # modification: inplace=True for speed-up
         x = self.conv_post(x)
         spec = torch.exp(x[:, : self.post_n_fft // 2 + 1, :])
         phase = torch.sin(x[:, self.post_n_fft // 2 + 1 :, :])
@@ -522,10 +532,15 @@ class UpSample1d(nn.Module):
         if self.layer_type == "none":
             return x
         else:
+            # --- BEFORE FIX ---
             # return F.interpolate(x, scale_factor=2, mode="nearest")
+            # ------------------
+
+            # --- AFTER FIX ---
             output_size = list(x.shape)
             output_size[-1] *= 2
             return F.interpolate(x, size=output_size[-1], mode="nearest")
+            # ------------------
 
 
 class AdainResBlk1d(nn.Module):
@@ -534,7 +549,7 @@ class AdainResBlk1d(nn.Module):
         dim_in,
         dim_out,
         style_dim=64,
-        actv=nn.LeakyReLU(0.2),
+        actv=nn.LeakyReLU(0.2, inplace=True),   # modification: inplace=True for speed-up
         upsample="none",
         dropout_p=0.0,
     ):
@@ -544,7 +559,7 @@ class AdainResBlk1d(nn.Module):
         self.upsample = UpSample1d(upsample)
         self.learned_sc = dim_in != dim_out
         self._build_weights(dim_in, dim_out, style_dim)
-        self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(dropout_p, inplace=True)  # modification: inplace=True for speed-up
         if upsample == "none":
             self.pool = nn.Identity()
         else:

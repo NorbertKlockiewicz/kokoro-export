@@ -68,9 +68,10 @@ input_name_mappings = {
 # Encoder - export pipeline
 # -------------------------
 
-def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False):
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False, 
+                                  max_tokens: int | None = None, max_duration: int | None = None):
     # Model setup
-    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
+    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True, lstm_padding=max_tokens)
     encoder = TextEncoderWrapper(model)
     encoder.eval()
 
@@ -80,8 +81,8 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
     # Dynamic shapes definition
     dynamic_shapes = None
     if dynamic:
-        t = Dim("t", min=16, max=128)   # Tokens (number)
-        d = Dim("d", min=32, max=296)   # Duration
+        t = Dim("t", min=16, max=max_tokens)   # Tokens (number)
+        d = Dim("d", min=32, max=max_duration)   # Duration
 
         dynamic_shapes = (
             {1: t},         # input_ids: (1, t)
@@ -90,7 +91,7 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
         )
 
     # Export to ExportedProgram
-    exported_program = torch.export.draft_export(encoder, inputs, dynamic_shapes=dynamic_shapes)
+    exported_program = torch.export.export(encoder, inputs, dynamic_shapes=dynamic_shapes)
 
     # Optionally lower to edge and partition
     if not transform_and_lower:
@@ -112,6 +113,8 @@ if __name__ == "__main__":
     parser.add_argument("--input-size", choices=["inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
     parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
+    parser.add_argument("--max-tokens", type=int, required=False, help="Maximum number of tokens (used only if --dynamic is set)")
+    parser.add_argument("--max-duration", type=int, required=False, help="Maximum duration (used only if --dynamic is set)")
     args = parser.parse_args()
 
     # Mode selection
@@ -119,8 +122,13 @@ if __name__ == "__main__":
         input_mode = "inp-64"
     elif args.input_size is None:
         raise RuntimeError("--input-size is required when bundled == false")
+    
+    if args.dynamic and (args.max_duration is None or args.max_tokens is None):
+        raise RuntimeError("--max_tokens and --max_duration required when dynamic == true")
 
     bundled = args.bundled
+    max_tokens = args.max_tokens
+    max_duration = args.max_duration
     input_mode = args.input_size if not bundled else "inp-64"
 
     root_destination = "exported_models/tmp"
@@ -137,7 +145,7 @@ if __name__ == "__main__":
             input_ids[0][0] = 0
             input_ids[0][-1] = 0
 
-        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic)
+        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic, max_tokens=max_tokens, max_duration=max_duration)
         executorch_program = edge_program.to_executorch()
 
         print_delegation_info(executorch_program.exported_program().graph_module)
@@ -154,7 +162,7 @@ if __name__ == "__main__":
             input_ids = inputs[0]
             input_ids[0][0] = 0
             input_ids[0][-1] = 0
-            _, exported_enc = convert_to_executorch_program(inputs, transform_and_lower=False)
+            _, exported_enc = convert_to_executorch_program(inputs, transform_and_lower=False, dynamic=args.dynamic, max_tokens=max_tokens, max_duration=max_duration)
             encoders[n_tokens] = exported_enc
 
         edge_program = to_edge_transform_and_lower(

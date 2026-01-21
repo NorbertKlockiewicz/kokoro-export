@@ -135,13 +135,6 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
 
     if not transform_and_lower:
         return decoder, exported_program
-    
-    print("--- Model Graph Nodes ---")
-    for node in exported_program.graph.nodes:
-        if node.op == "call_function":
-            print(f"Node: {node.name}, Op: {node.target}")
-    print("-------------------------")
-    exported_program.graph_module.graph.print_tabular()
 
     executorch_program = to_edge_transform_and_lower(
         exported_program,

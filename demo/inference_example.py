@@ -38,16 +38,12 @@ if __name__ == "__main__":
 
   # Define paths to Kokoro submodules:
   # - DurationPredictor
-  # - F0NPredictor
-  # - TextEncoder
-  # - TextDecoder
+  # - Synthesizer
   # If selected paths do not exist, the script will attempt to download 
   # the files from the huggingface repository.
   MODEL_FILEPATHS = {
     "duration_predictor": ...,
-    "f0n_predictor": ...,
-    "text_encoder": ...,
-    "text_decoder": ...
+    "synthesizer": ...
   }
 
   # Download missing model files if not present in selected paths
@@ -56,28 +52,24 @@ if __name__ == "__main__":
       if path is None or path is ... or not os.path.exists(path):
           user_input = input(f"{filename} not found. Download from HuggingFace? [y/N]: ").strip().lower()
           if user_input == "y":
-              new_path = hf_hub_download(REPO_ID, "xnnpack/" + filename, cache_dir=CACHE_DIR)
+              new_path = hf_hub_download(REPO_ID, "xnnpack/medium/" + filename, cache_dir=CACHE_DIR)
               MODEL_FILEPATHS[name] = new_path
           else:
               print(f"Skipping download for {filename}.")
               MODEL_FILEPATHS[name] = None
 
   # Load .pte models
-  # The models have 3 available static input sizes: for 32, 64 and 128 tokens.
-  # The target durations are maximum likelyhood estimators for duration input shapes (for f0n_predictor, encoder and decoder).
-  # Each number of input tokens maps to a different static duration: 
-  # - 32 tokens -> 92 duration,
-  # - 64 tokens -> 164 duration,
-  # - 128 tokens -> 296 duration,
-  # You can change the input size HERE:
-  INPUT_SIZE = 64
-  TARGET_DURATION = 164
-  METHOD_NAME = f"forward_{INPUT_SIZE}"
+  # As it stands for now, the synthesizer model is exported with dynamic shapes, 
+  # allowing to process up to 128 tokens in a single run.
+  # The durationPredictor model however, is exported with semi-dynamic shapes:
+  # but you can use method 'forward_128', which accepts any number of tokens
+  # from 1 up to 128.
+  MAX_INPUT_SIZE = 128
+  MAX_DURATION = 296
+  METHOD_NAME = f"forward_{MAX_INPUT_SIZE}"
 
   duration_predictor = runtime.load_program(MODEL_FILEPATHS["duration_predictor"]).load_method(METHOD_NAME)
-  f0n_predictor = runtime.load_program(MODEL_FILEPATHS["f0n_predictor"]).load_method(METHOD_NAME)
-  text_encoder = runtime.load_program(MODEL_FILEPATHS["text_encoder"]).load_method(METHOD_NAME)
-  text_decoder = runtime.load_program(MODEL_FILEPATHS["text_decoder"]).load_method(METHOD_NAME)
+  synthesizer = runtime.load_program(MODEL_FILEPATHS["synthesizer"]).load_method("forward")
 
   # Load sample voice from HF
   VOICE_PATH = hf_hub_download(REPO_ID, "voices/af_heart.bin", cache_dir=CACHE_DIR)
@@ -103,51 +95,47 @@ if __name__ == "__main__":
   # -----------------------
   # Token processing
   input_ids = [MODEL_VOCAB.get(p) for p in INPUT_PHONEMES if MODEL_VOCAB.get(p) is not None]
-  original_input_length = min(len(input_ids) + 2, INPUT_SIZE)
+  input_length = min(len(input_ids) + 2, MAX_INPUT_SIZE)
   # Pad or truncate tokens
-  input_ids = ([0] + input_ids[:INPUT_SIZE-2] + [0])
-  while len(input_ids) < INPUT_SIZE:
-      input_ids.append(0)
+  input_ids = ([0] + input_ids[:input_length-2] + [0])
   input_tokens = torch.tensor([input_ids], dtype=torch.int64)
   # Model inputs preparation
-  v_ref = voice[len(INPUT_PHONEMES) - 1][:, :128]
-  v_style = voice[len(INPUT_PHONEMES) - 1][:, 128:]
-  text_mask = torch.ones((1, INPUT_SIZE), dtype=torch.bool)
-  text_mask[:, original_input_length:] = False
+  voice_vec = voice[len(INPUT_PHONEMES) - 1]
+  v_ref = voice_vec[:, :128]
+  v_style = voice_vec[:, 128:]
+  text_mask = torch.ones((1, input_length), dtype=torch.bool)
   speed = torch.tensor([1.0], dtype=torch.float32)
 
   # 1. Duration Predictor
   pred_dur, d = duration_predictor.execute((input_tokens, text_mask, v_style, speed))
 
-  # Native duration scaling
-  pred_dur_scaled = scale(pred_dur, TARGET_DURATION)
-  indices = torch.repeat_interleave(torch.arange(INPUT_SIZE), pred_dur_scaled.view(-1))[:TARGET_DURATION]
+  # Cut result back to the original shape
+  pred_dur = pred_dur[:input_length]
+  d = d[:, :input_length, :]
 
-  # 2. F0 Predictor
-  f0_pred, n_pred, _, pred_aln_trg = f0n_predictor.execute((indices, d, v_style))
+  # Native duration scaling
+  total_dur = pred_dur.sum().item()
+  if total_dur > MAX_DURATION:
+    pred_dur = scale(pred_dur, MAX_DURATION)
+    total_dur = MAX_DURATION
+  indices = torch.repeat_interleave(torch.arange(input_length), pred_dur.view(-1))[:total_dur]
 
   # Calculate efficient duration to trim silence
   first_index = None
   for i, val in enumerate(indices):
-      if val.item() == original_input_length:
+      if val.item() == input_length:
           first_index = i
           break
-  eff_dur = int((first_index if first_index is not None else TARGET_DURATION) * 0.95)
+  eff_dur = first_index if first_index is not None else MAX_DURATION
 
-  # 3. Text Encoder
-  asr = text_encoder.execute((input_tokens, text_mask, pred_aln_trg))[0]
-
-  # 4. Text Decoder
-  audio_out = text_decoder.execute((asr, f0_pred, n_pred, v_ref))[0]
-  audio_out = audio_out[:, :, :600 * eff_dur].squeeze().cpu()
-  # -------------------------
-  # Kokoro inference finishes
+  # 2. Synthesizer
+  audio = synthesizer.execute((input_tokens, text_mask, indices, d, voice_vec))[0]
 
   # Post-processing
   # Crop the audio to remove silent fragments from both ends.
-  v_start = find_voice_bound(audio_out, from_end=False)
-  v_end = find_voice_bound(audio_out, from_end=True)
-  final_audio = audio_out[v_start:v_end]
+  v_start = find_voice_bound(audio, from_end=False)
+  v_end = find_voice_bound(audio, from_end=True)
+  final_audio = audio[v_start:v_end]
 
   print("Inference succeeded!")
   print("Result:", final_audio)

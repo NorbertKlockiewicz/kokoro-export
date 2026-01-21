@@ -21,14 +21,23 @@ class DurationPredictorWrapper(Module):
         self.text_encoder_module = model.predictor.text_encoder
         self.lstm = model.predictor.lstm
         self.duration_proj = model.predictor.duration_proj
+
+        self.lstm_padding = model.lstm_padding
     def forward(self, input_ids: torch.LongTensor, text_mask: torch.BoolTensor,
                       s: torch.FloatTensor, speed: torch.Tensor):
-        input_lengths = torch.tensor(input_ids.shape[-1])
+        # Padding stage
+        if self.lstm_padding:
+            pad_len = self.lstm_padding - input_ids.shape[-1]
+            input_ids = torch.nn.functional.pad(input_ids, (0, pad_len), value=0)
+            text_mask = torch.nn.functional.pad(text_mask, (0, pad_len), value=False)
+
         bert_dur = self.bert(input_ids, attention_mask=text_mask.int())
         d_en = self.bert_encoder(bert_dur).transpose(-1, -2)
-        d = self.text_encoder_module(d_en, s, input_lengths, ~text_mask)    # A problem here (with dynamic shapes)
+        d = self.text_encoder_module(d_en, s, torch.tensor(input_ids.shape[-1]), ~text_mask)    # A problem here (with dynamic shapes)
         # Probably impossible to fix since LSTM export with dynamic shapes is not supported
+
         x, _ = self.lstm(d)
+        
         duration = self.duration_proj(x)
         duration = torch.sigmoid(duration).sum(axis=-1) / speed
         pred_dur = torch.round(duration).clamp(min=1).long().squeeze()
@@ -71,17 +80,18 @@ inputs_dict = {
 
 # Keys: input size names -> Values: equivalent number of input tokens
 input_name_mappings = {
-    "inp-32": "32",
-    "inp-64": "64",
-    "inp-128": "128",
+    "inp-32": 32,
+    "inp-64": 64,
+    "inp-128": 128,
 }
 
 # ------------------------------------
 # Duration predictor - export pipeline
 # ------------------------------------
 
-def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False):
-    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True)
+def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dynamic: bool = False,
+                                  max_tokens: int | None = None):
+    model = KModel(repo_id="hexgrad/Kokoro-82M", disable_complex=True, lstm_padding=max_tokens)
     duration_predictor = DurationPredictorWrapper(model)
     duration_predictor.eval()
 
@@ -93,11 +103,11 @@ def convert_to_executorch_program(inputs, transform_and_lower: bool = True, dyna
     if dynamic:
         # Let's say we avoid giving less then 16 tokens on the input, since
         # the response quality might be degraded in such case.
-        t = Dim("t", min=16, max=128)   # Tokens (number)
+        t = Dim("t", min=8, max=max_tokens)   # Tokens (number)
 
         dynamic_shapes = (
             {1: t},   # input_ids: (1, t)
-            {1: t},   # text_mask: (1, k)
+            {1: t},   # text_mask: (1, t)
             None,     # s (voice half-array, always static)
             None      # speed (a single float)
         )
@@ -124,13 +134,18 @@ if __name__ == "__main__":
     parser.add_argument("--input-size", choices=["inp-32", "inp-64", "inp-128"], required=False)
     parser.add_argument("--bundled", type=lambda x: x.lower() == "true", default=False, required=False)
     parser.add_argument("--dynamic", type=lambda x: x.lower() == "true", default=False, required=False)
+    parser.add_argument("--max-tokens", type=int, required=False, help="Maximum number of tokens (used only if --dynamic is set)")
     args = parser.parse_args()
 
     # Mode selection
     if args.bundled is False and args.input_size is None:
         raise RuntimeError("--input-size is required when bundled == false")
+    
+    if args.dynamic and args.max_tokens is None:
+        raise RuntimeError("--max_tokens required when dynamic == true")
 
     bundled = args.bundled
+    max_tokens = args.max_tokens
     input_mode = args.input_size if not bundled else "inp-64"
 
     ROOT_DESTINATION = "exported_models/tmp"
@@ -138,7 +153,7 @@ if __name__ == "__main__":
     if not bundled:
         # Single export
         print(f"Exporting duration predictor with {input_mode} input...")
-        input_alias = input_name_mappings[input_mode]
+        n_tokens = input_name_mappings[input_mode]
         inputs = inputs_dict[input_mode]
 
         if input_mode in ["inp-32", "inp-64", "inp-128"]:
@@ -146,12 +161,12 @@ if __name__ == "__main__":
             input_ids[0][0] = 0
             input_ids[0][-1] = 0
 
-        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic)
+        _, edge_program = convert_to_executorch_program(inputs, dynamic=args.dynamic, max_tokens=max_tokens)
         executorch_program = edge_program.to_executorch()
 
         print_delegation_info(executorch_program.exported_program().graph_module)
 
-        inp_alias = input_alias if not args.dynamic else "dynamic"
+        inp_alias = str(n_tokens) if not args.dynamic else "dynamic"
         with open(f"{ROOT_DESTINATION}/duration_predictor_{inp_alias}.pte", "wb") as file:
             executorch_program.write_to_file(file)
     else:
@@ -160,11 +175,13 @@ if __name__ == "__main__":
 
         predictors = {}
         for name, n_tokens in input_name_mappings.items():
+            # if name == "inp-128":
+            #     continue
             inputs = inputs_dict[name]
             input_ids = inputs[0]
             input_ids[0][0] = 0
             input_ids[0][-1] = 0
-            _, exported_predictor = convert_to_executorch_program(inputs_dict[name], transform_and_lower=False)
+            _, exported_predictor = convert_to_executorch_program(inputs_dict[name], dynamic=args.dynamic, transform_and_lower=False, max_tokens=max_tokens)
             predictors[n_tokens] = exported_predictor
 
         executorch_program = to_edge_transform_and_lower(

@@ -33,7 +33,7 @@ class LayerNorm(nn.Module):
 
 
 class TextEncoder(nn.Module):
-    def __init__(self, channels, kernel_size, depth, n_symbols, actv=nn.LeakyReLU(0.2)):
+    def __init__(self, channels, kernel_size, depth, n_symbols, actv=nn.LeakyReLU(0.2), lstm_padding=None):
         super().__init__()
         self.embedding = nn.Embedding(n_symbols, channels)
         padding = (kernel_size - 1) // 2
@@ -47,6 +47,8 @@ class TextEncoder(nn.Module):
             ))
         self.lstm = nn.LSTM(channels, channels//2, 1, batch_first=True, bidirectional=True)
 
+        self.lstm_padding = lstm_padding
+
     def forward(self, x, m):
         x = self.embedding(x)  # [B, T, emb]
         x = x.transpose(1, 2)  # [B, emb, T]
@@ -56,7 +58,21 @@ class TextEncoder(nn.Module):
             x = c(x)
             x.masked_fill_(m, 0.0)
         x = x.transpose(1, 2)  # [B, T, chn]
+
+        # Padding to a fixed size
+        if self.lstm_padding is not None:
+            original_seq_len = x.shape[1]
+            torch._check_is_size(original_seq_len)
+            pad_amount = self.lstm_padding - original_seq_len
+            x = torch.nn.functional.pad(x, (0, 0, 0, pad_amount))
+
+        # LSTM inference
         x, _ = self.lstm(x)
+
+        # Reshaping back to the original size
+        if self.lstm_padding is not None:
+            x = x[:, :original_seq_len, :]
+
         x = x.transpose(-1, -2)
         x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)
         x_pad[:, :, :x.shape[-1]] = x
@@ -85,9 +101,9 @@ class AdaLayerNorm(nn.Module):
 
 
 class ProsodyPredictor(nn.Module):
-    def __init__(self, style_dim, d_hid, nlayers, max_dur=50, dropout=0.1):
+    def __init__(self, style_dim, d_hid, nlayers, max_dur=50, dropout=0.1, lstm_padding=None):
         super().__init__()
-        self.text_encoder = DurationEncoder(sty_dim=style_dim, d_model=d_hid,nlayers=nlayers, dropout=dropout)
+        self.text_encoder = DurationEncoder(sty_dim=style_dim, d_model=d_hid,nlayers=nlayers, dropout=dropout, lstm_padding=lstm_padding)
         self.lstm = nn.LSTM(d_hid + style_dim, d_hid // 2, 1, batch_first=True, bidirectional=True)
         self.duration_proj = LinearNorm(d_hid, max_dur)
         self.shared = nn.LSTM(d_hid + style_dim, d_hid // 2, 1, batch_first=True, bidirectional=True)
@@ -101,6 +117,8 @@ class ProsodyPredictor(nn.Module):
         self.N.append(AdainResBlk1d(d_hid // 2, d_hid // 2, style_dim, dropout_p=dropout))
         self.F0_proj = nn.Conv1d(d_hid // 2, 1, 1, 1, 0)
         self.N_proj = nn.Conv1d(d_hid // 2, 1, 1, 1, 0)
+
+        self.lstm_padding = lstm_padding
 
     def forward(self, texts, style, text_lengths, alignment, m):
         d = self.text_encoder(texts, style, text_lengths, m)
@@ -133,7 +151,7 @@ class ProsodyPredictor(nn.Module):
 
 
 class DurationEncoder(nn.Module):
-    def __init__(self, sty_dim, d_model, nlayers, dropout=0.1):
+    def __init__(self, sty_dim, d_model, nlayers, dropout=0.1, lstm_padding=None):
         super().__init__()
         self.lstms = nn.ModuleList()
         for _ in range(nlayers):
@@ -142,6 +160,8 @@ class DurationEncoder(nn.Module):
         self.dropout = dropout
         self.d_model = d_model
         self.sty_dim = sty_dim
+
+        self.lstm_padding = lstm_padding
 
     def forward(self, x, style, text_lengths, m):
         masks = m
@@ -162,9 +182,18 @@ class DurationEncoder(nn.Module):
                 # x = nn.utils.rnn.pack_padded_sequence(
                 #     x, lengths, batch_first=True, enforce_sorted=False)
                 # block.flatten_parameters()
+
+                if self.lstm_padding is not None:
+                    original_seq_len = x.shape[1]
+                    torch._check_is_size(original_seq_len)
+                    pad_amount = self.lstm_padding - original_seq_len
+                    x = torch.nn.functional.pad(x, (0, 0, 0, pad_amount))
+
                 x, _ = block(x) # This seems to be a problem?
-                # x, _ = nn.utils.rnn.pad_packed_sequence(
-                #     x, batch_first=True)
+
+                if self.lstm_padding is not None:
+                    x = x[:, :original_seq_len, :]
+
                 x = F.dropout(x, p=self.dropout, training=False)
                 x = x.transpose(-1, -2)
                 x_pad = torch.zeros([x.shape[0], x.shape[1], m.shape[-1]], device=x.device)

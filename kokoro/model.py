@@ -34,6 +34,7 @@ class KModel(torch.nn.Module):
         config: Union[Dict, str, None] = None,
         model: Optional[str] = None,
         disable_complex: bool = False,
+        lstm_padding: int | None = None
     ):
         super().__init__()
         if repo_id is None:
@@ -61,12 +62,14 @@ class KModel(torch.nn.Module):
             nlayers=config["n_layer"],
             max_dur=config["max_dur"],
             dropout=config["dropout"],
+            lstm_padding=lstm_padding
         )
         self.text_encoder = TextEncoder(
             channels=config["hidden_dim"],
             kernel_size=config["text_encoder_kernel_size"],
             depth=config["n_layer"],
             n_symbols=config["n_token"],
+            lstm_padding=lstm_padding
         )
         self.decoder = Decoder(
             dim_in=config["hidden_dim"],
@@ -88,6 +91,8 @@ class KModel(torch.nn.Module):
             except:
                 state_dict = {k[7:]: v for k, v in state_dict.items()}
                 getattr(self, key).load_state_dict(state_dict, strict=False)
+        
+        self.lstm_padding = lstm_padding
 
     @property
     def device(self):
